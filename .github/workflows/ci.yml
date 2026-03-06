@@ -41,6 +41,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: recursive
 
       - name: Detect versions
         id: version
@@ -87,6 +88,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install extraction tools
         run: |
@@ -158,6 +161,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Download cached app
         uses: actions/download-artifact@v4
@@ -174,16 +179,6 @@ jobs:
             echo "Synced app/webview to codex-linux-fork/webview"
           else
             echo "Note: app/webview not available"
-          fi
-
-      - name: Checkout codex-oss
-        run: |
-          if [ ! -d codex-oss/.git ]; then
-            git clone --depth 1 https://github.com/openai/codex.git codex-oss
-          else
-            cd codex-oss
-            git fetch origin --depth 1
-            cd -
           fi
 
       - name: Set up QEMU
@@ -246,7 +241,6 @@ jobs:
           case "$DISTRO" in
             ubuntu-*|debian-*)
               if [ "$ARCH" = "armv7l" ]; then
-                # NodeSource doesn't support armhf, use prebuilt binaries
                 NODE_VER="20.11.0"
                 curl -sL "https://unofficial-builds.nodejs.org/download/release/v${NODE_VER}/node-v${NODE_VER}-linux-armv7l.tar.gz" | tar xz -C /usr/local --strip-components=1
               else
