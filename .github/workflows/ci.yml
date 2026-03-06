@@ -195,11 +195,22 @@ jobs:
           test -f app/.vite/build/main.js
           test -d app/webview
 
+      - name: Archive extracted shell
+        run: |
+          set -euo pipefail
+
+          paths=(.vite webview)
+          if [ -d app/node_modules/tslib ]; then
+            paths+=(node_modules/tslib)
+          fi
+
+          tar -C app -czf extracted-shell.tar.gz "${paths[@]}"
+
       - name: Upload extracted shell
         uses: actions/upload-artifact@v4
         with:
           name: extracted-shell
-          path: app/
+          path: extracted-shell.tar.gz
           retention-days: 1
 
   build:
@@ -220,7 +231,14 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: extracted-shell
-          path: app/
+          path: .
+
+      - name: Restore extracted shell
+        run: |
+          set -euo pipefail
+          rm -rf app
+          mkdir -p app
+          tar -C app -xzf extracted-shell.tar.gz
 
       - name: Stage extracted shell
         run: bash ./scripts/prepare-linux-fork.sh
