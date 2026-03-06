@@ -147,9 +147,14 @@ jobs:
           cp -r "$RESOURCES_PATH"/* app/
           
           # Remove macOS extended attribute files that cause artifact upload issues
-          find app -name '*:*' -type f -delete 2>/dev/null || true
-          
-          echo "Cleaned up extended attribute files"
+          # These are created by 7z when extracting HFS and have colons in filenames
+          echo "Cleaning up macOS extended attribute files..."
+          find app -type f -print0 | while IFS= read -r -d '' file; do
+            if [[ "$file" == *":"* ]]; then
+              rm "$file"
+            fi
+          done
+          echo "Extended attribute files removed"
           
           echo "Extracting app.asar..."
           if [ -f "app/app.asar" ]; then
