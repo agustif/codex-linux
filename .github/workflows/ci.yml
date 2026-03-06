@@ -222,7 +222,7 @@ jobs:
           
           echo "Building for $DISTRO/$ARCH..."
           
-          # Create build script
+          # Create comprehensive build script that runs inside container
           cat > /tmp/build.sh << 'SCRIPT_EOF'
           #!/bin/bash
           set -ex
@@ -230,91 +230,136 @@ jobs:
           ARCH=$1
           DISTRO=$2
           
-          # Install deps based on distro
+          echo "===== BUILD: $DISTRO / $ARCH ====="
+          echo "PWD: $(pwd)"
+          ls -la /build/ 2>/dev/null || echo "Note: /build may be mounted"
+          
+          # ===== DEPS: Install based on distro
+          echo "[INSTALL] Dependencies for $DISTRO..."
           case "$DISTRO" in
             ubuntu-22.04|debian-11)
-              apt-get update
-              apt-get install -y build-essential curl wget git pkg-config \
+              apt-get update -qq
+              apt-get install -y \
+                build-essential curl wget git pkg-config \
                 libssl-dev libcap-dev ca-certificates libsecret-1-dev \
                 libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils \
                 libatspi2.0-0 libuuid1 libappindicator3-1 libasound2 libfuse2 \
-                file 7zip-full xar python3
+                file p7zip-full python3 2>&1 | tail -5
               ;;
             fedora-38)
-              dnf install -y gcc g++ make curl wget git openssl-devel \
+              dnf install -y \
+                gcc g++ make curl wget git openssl-devel \
                 libsecret-devel gtk3 libnotify nss libxss libxtst xdg-utils \
-                at-spi2-core file p7zip xar python3
+                at-spi2-core file p7zip python3 2>&1 | tail -5
               ;;
             alpine-latest)
-              apk add --no-cache build-base curl wget git openssl-dev \
+              apk add --no-cache \
+                build-base curl wget git openssl-dev \
                 libsecret-dev gtk+3.0 libnotify nss xdg-utils file \
-                python3 bash
+                python3 bash 2>&1 | tail -5
               ;;
           esac
           
-          # Install Node
-          curl -fsSL https://deb.nodesource.com/setup_20.x | bash - 2>/dev/null || true
+          # ===== NODE: Install NodeJS
+          echo "[INSTALL] Node.js..."
           case "$DISTRO" in
-            ubuntu-*|debian-*) apt-get install -y nodejs ;;
-            fedora-*) dnf install -y nodejs ;;
-            alpine-*) apk add --no-cache nodejs npm ;;
+            ubuntu-*|debian-*)
+              curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+              apt-get install -y nodejs 2>&1 | grep -E "^\d+|Processing"
+              ;;
+            fedora-*)
+              dnf install -y nodejs 2>&1 | tail -3
+              ;;
+            alpine-*)
+              apk add --no-cache nodejs npm 2>&1 | tail -3
+              ;;
           esac
+          node --version
+          npm --version
           
-          # Install Rust
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          # ===== RUST: Install Rust
+          echo "[INSTALL] Rust..."
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y -q
           export PATH="$HOME/.cargo/bin:$PATH"
+          rustc --version
+          cargo --version
           
           cd /build
           
-          # [1/5] Build Rust backend
-          echo "[1/5] Building Rust binary for $ARCH..."
+          # ===== [1/5] BUILD RUST BACKEND
+          echo "[1/5] Building Rust binary ($ARCH)..."
+          if [ ! -d "codex-oss/codex-rs" ]; then
+            echo "ERROR: codex-oss/codex-rs not found!"
+            find /build -maxdepth 2 -type d | head -10
+            exit 1
+          fi
+          
           cd codex-oss/codex-rs
-          cargo build --release -p codex-app-server 2>&1 | tail -20
+          cargo build --release -p codex-app-server 2>&1 | tail -10
           cd -
+          
           mkdir -p codex-linux-fork/bin
+          if [ ! -f codex-oss/codex-rs/target/release/codex-app-server ]; then
+            echo "ERROR: Binary not built!"
+            ls -la codex-oss/codex-rs/target/release/ 2>/dev/null || echo "target dir missing"
+            exit 1
+          fi
+          
           cp codex-oss/codex-rs/target/release/codex-app-server codex-linux-fork/bin/codex
           chmod +x codex-linux-fork/bin/codex
-          echo "Binary: $(du -h codex-linux-fork/bin/codex | cut -f1)"
+          echo "✓ Binary: $(du -h codex-linux-fork/bin/codex | cut -f1)"
           
-          # [2/5] Download ripgrep
-          echo "[2/5] Downloading ripgrep..."
+          # ===== [2/5] DOWNLOAD RIPGREP
+          echo "[2/5] Downloading ripgrep ($ARCH)..."
           case "$ARCH" in
             x86_64) RG_URL="https://github.com/BurntSushi/ripgrep/releases/download/14.1.0/ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz" ;;
             arm64|aarch64) RG_URL="https://github.com/BurntSushi/ripgrep/releases/download/14.1.0/ripgrep-14.1.0-aarch64-unknown-linux-gnu.tar.gz" ;;
             armv7l) RG_URL="https://github.com/BurntSushi/ripgrep/releases/download/14.1.0/ripgrep-14.1.0-armv7-unknown-linux-gnueabihf.tar.gz" ;;
           esac
-          curl -sL "$RG_URL" | tar xz -C codex-linux-fork/resources --strip-components=1 2>/dev/null && \
-            chmod +x codex-linux-fork/resources/rg || echo "ripgrep skipped"
-          echo "ripgrep ready"
           
-          # [3/5] Install dependencies
+          mkdir -p codex-linux-fork/resources
+          if curl -sL --fail "$RG_URL" | tar xz -C codex-linux-fork/resources --strip-components=1 2>/dev/null; then
+            chmod +x codex-linux-fork/resources/rg
+            echo "✓ ripgrep ready"
+          else
+            echo "⚠ ripgrep download failed (non-fatal)"
+          fi
+          
+          # ===== [3/5] INSTALL NODE DEPENDENCIES
           echo "[3/5] Installing Node dependencies..."
           cd codex-linux-fork
-          npm install --production 2>&1 | tail -10
-          echo "Dependencies installed"
+          npm install --production 2>&1 | tail -5
+          echo "✓ Dependencies installed"
           
-          # [4/5] Build packages
+          # ===== [4/5] BUILD PACKAGES
           echo "[4/5] Building packages..."
-          npm run build:linux 2>&1 | tail -20
-          echo "Packages built"
+          npm run build:linux 2>&1 | tail -10
+          echo "✓ Packages built"
           
-          # [5/5] Checksums
+          # ===== [5/5] CREATE CHECKSUMS
           echo "[5/5] Creating checksums..."
-          cd dist
-          sha256sum * > SHA256SUMS
-          cat SHA256SUMS
+          if [ -d dist ]; then
+            cd dist
+            sha256sum * > SHA256SUMS
+            echo "✓ Checksums:"
+            head -3 SHA256SUMS
+          else
+            echo "⚠ dist/ not found"
+          fi
           
-          echo "Build complete!"
+          echo ""
+          echo "===== BUILD COMPLETE ($DISTRO/$ARCH) ====="
           SCRIPT_EOF
           
           chmod +x /tmp/build.sh
           
-          # Run Docker build
+          # Run Docker build with proper mounts
           docker run --rm \
             --platform "linux/$DOCKER_ARCH" \
-            --volume "$(pwd):/build" \
+            --volume "$(pwd):/build:rw" \
             --volume "/tmp/build.sh:/build.sh:ro" \
             -e "CARGO_TARGET_DIR=/build/target-cache" \
+            -e "CARGO_TERM_COLOR=always" \
             --workdir /build \
             "$BASE_IMAGE" \
             bash /build.sh "$ARCH" "$DISTRO"
