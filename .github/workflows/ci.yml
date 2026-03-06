@@ -120,6 +120,9 @@ jobs:
             touch Codex.dmg.skipped
           fi
 
+      - name: Install asar tool
+        run: npm install -g asar
+
       - name: Extract Codex.app
         if: hashFiles('Codex.dmg') != ''
         run: |
@@ -140,11 +143,21 @@ jobs:
             exit 1
           fi
           
-          echo "Found Resources directory, copying all files..."
+          echo "Copying Resources to app/..."
           cp -r "$RESOURCES_PATH"/* app/
           
+          echo "Extracting app.asar..."
+          if [ -f "app/app.asar" ]; then
+            mkdir -p app/webview
+            asar extract app/app.asar app/webview/
+            echo "app.asar extracted successfully"
+            ls -lh app/webview/ | head -10
+          else
+            echo "WARNING: app.asar not found"
+          fi
+          
           echo "Extraction complete. Files in app/:"
-          ls -lh app/ | head -20
+          find app -maxdepth 1 -type f
           echo "Total files: $(find app -type f | wc -l)"
 
       - name: Cache app assets
