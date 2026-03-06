@@ -146,6 +146,11 @@ jobs:
           echo "Copying Resources to app/..."
           cp -r "$RESOURCES_PATH"/* app/
           
+          # Remove macOS extended attribute files that cause artifact upload issues
+          find app -name '*:*' -type f -delete 2>/dev/null || true
+          
+          echo "Cleaned up extended attribute files"
+          
           echo "Extracting app.asar..."
           if [ -f "app/app.asar" ]; then
             mkdir -p app/webview
