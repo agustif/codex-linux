@@ -65,7 +65,7 @@ jobs:
           echo "codex=$CODEX_VERSION" >> $GITHUB_OUTPUT
           echo "is_release=$([[ '$GITHUB_REF' == refs/tags/* ]] && echo true || echo false)" >> $GITHUB_OUTPUT
 
-          echo "📌 Repo: v$REPO_VERSION | Codex: v$CODEX_VERSION"
+          echo "Repo: v$REPO_VERSION | Codex: v$CODEX_VERSION"
 
       - name: Determine build mode
         id: mode
@@ -77,7 +77,7 @@ jobs:
             MODE="full"
           fi
           echo "mode=$MODE" >> $GITHUB_OUTPUT
-          echo "🏗️ Build mode: $MODE"
+          echo "Build mode: $MODE"
 
       - name: Generate build matrix
         id: matrix
@@ -92,34 +92,16 @@ jobs:
           echo "json=$MATRIX" >> $GITHUB_OUTPUT
 
   # ============================================================================
-  # BUILD: Multi-arch, multi-distro builds
+  # PREPARE: Download and extract Codex.app once, cache for builds
   # ============================================================================
-  build:
-    name: Build ${{ matrix.distro }} / ${{ matrix.arch }}
+  prepare:
+    name: Download & extract Codex.app
     needs: detect
     runs-on: ubuntu-latest
-    if: ${{ !needs.detect.outputs.is_pr || github.event_name != 'pull_request' || github.repository == github.event.pull_request.head.repo.full_name }}
-    
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.detect.outputs.matrix_json) }}
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Checkout codex-oss (OSS backend)
-        run: |
-          if [ ! -d codex-oss/.git ]; then
-            git clone --depth 1 https://github.com/openai/codex.git codex-oss
-          else
-            cd codex-oss
-            git fetch origin --depth 1
-            cd -
-          fi
+      - uses: actions/checkout@v4
 
       - name: Download Codex.app
-        id: download
         run: |
           DMG_FILE="Codex.dmg"
           
@@ -131,25 +113,23 @@ jobs:
             "https://storage.googleapis.com/codex-releases/Codex.dmg"; do
             if curl -L -f --progress-bar "$URL" -o "${DMG_FILE}" 2>/dev/null; then
               echo "Downloaded: $(du -h ${DMG_FILE} | cut -f1)"
-              echo "downloaded=true" >> $GITHUB_OUTPUT
               break
             fi
           done
           
           if [ ! -f "${DMG_FILE}" ]; then
-            echo "Warning: Codex.app download failed, will use cached/existing app/"
-            echo "downloaded=false" >> $GITHUB_OUTPUT
+            echo "Warning: Codex.app download failed, will use existing app/ directory"
           fi
 
       - name: Extract Codex.app
-        if: steps.download.outputs.downloaded == 'true'
+        if: hashFiles('Codex.dmg') != ''
         run: |
           sudo apt-get update && sudo apt-get install -y 7zip-full xar
           mkdir -p extracted app
           
           # Try extraction
-          7z x Codex-*.dmg -oextracted/ > /dev/null 2>&1 || \
-            xar -x -f Codex-*.dmg -C extracted/
+          7z x Codex.dmg -oextracted/ > /dev/null 2>&1 || \
+            xar -x -f Codex.dmg -C extracted/
           
           # Copy extracted content to app/
           find extracted -type f \( -name "*.asar" -o -name "*.png" -o -name "*.svg" -o -name "*.node" \) \
@@ -159,7 +139,47 @@ jobs:
               cp "$f" "$dir/" 2>/dev/null || true
             done
           
-          echo "✓ Extraction complete"
+          echo "Extraction complete"
+          ls -lh app/
+
+      - name: Cache extracted app
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-app-cache
+          path: app/
+          retention-days: 1
+
+  # ============================================================================
+  # BUILD: Multi-arch, multi-distro builds
+  # ============================================================================
+  build:
+    name: Build ${{ matrix.distro }} / ${{ matrix.arch }}
+    needs: [detect, prepare]
+    runs-on: ubuntu-latest
+    
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.detect.outputs.matrix_json) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download cached app
+        uses: actions/download-artifact@v4
+        with:
+          name: codex-app-cache
+          path: app/
+
+      - name: Checkout codex-oss (OSS backend)
+        run: |
+          if [ ! -d codex-oss/.git ]; then
+            git clone --depth 1 https://github.com/openai/codex.git codex-oss
+          else
+            cd codex-oss
+            git fetch origin --depth 1
+            cd -
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
@@ -170,9 +190,8 @@ jobs:
           DISTRO="${{ matrix.distro }}"
           BASE_IMAGE="${{ matrix.base }}"
           DOCKER_ARCH="${{ matrix.docker_arch }}"
-          CODEX_VERSION="${{ needs.detect.outputs.codex_version }}"
           
-          echo "🔨 Building for $DISTRO/$ARCH..."
+          echo "Building for $DISTRO/$ARCH..."
           
           # Create build script
           cat > /tmp/build.sh << 'SCRIPT_EOF'
@@ -226,7 +245,7 @@ jobs:
           mkdir -p codex-linux-fork/bin
           cp codex-oss/codex-rs/target/release/codex-app-server codex-linux-fork/bin/codex
           chmod +x codex-linux-fork/bin/codex
-          echo "✓ Binary: $(du -h codex-linux-fork/bin/codex | cut -f1)"
+          echo "Binary: $(du -h codex-linux-fork/bin/codex | cut -f1)"
           
           # [2/5] Download ripgrep
           echo "[2/5] Downloading ripgrep..."
@@ -237,18 +256,18 @@ jobs:
           esac
           curl -sL "$RG_URL" | tar xz -C codex-linux-fork/resources --strip-components=1 2>/dev/null && \
             chmod +x codex-linux-fork/resources/rg || echo "ripgrep skipped"
-          echo "✓ ripgrep ready"
+          echo "ripgrep ready"
           
           # [3/5] Install dependencies
           echo "[3/5] Installing Node dependencies..."
           cd codex-linux-fork
           npm install --production 2>&1 | tail -10
-          echo "✓ Dependencies installed"
+          echo "Dependencies installed"
           
           # [4/5] Build packages
           echo "[4/5] Building packages..."
           npm run build:linux 2>&1 | tail -20
-          echo "✓ Packages built"
+          echo "Packages built"
           
           # [5/5] Checksums
           echo "[5/5] Creating checksums..."
@@ -256,7 +275,7 @@ jobs:
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
           
-          echo "✓ Build complete!"
+          echo "Build complete!"
           SCRIPT_EOF
           
           chmod +x /tmp/build.sh
@@ -331,7 +350,7 @@ jobs:
           mkdir -p release-assets
           
           # Flatten artifact structure
-          find all-artifacts -type f ! -name ".gitkeep" | while read -r f; do
+          find all-artifacts -type f ! -name ".gitkeep" ! -path "*/codex-app-cache/*" | while read -r f; do
             filename=$(basename "$f")
             cp "$f" "release-assets/$filename" 2>/dev/null || true
           done
@@ -355,7 +374,7 @@ jobs:
           ls -lh | grep -E "\.deb|\.rpm|AppImage|\.tar\.gz|codex-" | \
             awk '{print "- " $9 " (" $5 ")"}' >> MANIFEST.md
           
-          echo "✓ Release assets organized:"
+          echo "Release assets organized:"
           ls -lh | tail -20
 
       - name: Create GitHub Release
@@ -387,16 +406,12 @@ jobs:
       - name: Print summary
         run: |
           cat >> $GITHUB_STEP_SUMMARY << 'EOF'
-          # 🚀 Build Summary
+          # Build Summary
           
           - **Repo Version**: ${{ needs.detect.outputs.repo_version }}
           - **Codex Version**: ${{ needs.detect.outputs.codex_version }}
           - **Build Mode**: ${{ needs.detect.outputs.build_mode }}
           - **Is Release**: ${{ needs.detect.outputs.is_release }}
-          
-          ## Build Matrix
-          
-          ${{ needs.detect.outputs.matrix_json }}
           
           [View workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
           EOF
