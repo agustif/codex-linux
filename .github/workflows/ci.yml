@@ -170,6 +170,17 @@ jobs:
           find app -maxdepth 1 -type f
           echo "Total files: $(find app -type f | wc -l)"
 
+      - name: Verify extraction
+        run: |
+          echo "Files in app/:"
+          find app/ -maxdepth 2 -type f | head -20
+          WEBVIEW_SIZE=$(find app/webview -type f 2>/dev/null | wc -l)
+          echo "Webview files: $WEBVIEW_SIZE"
+          
+          if [ "$WEBVIEW_SIZE" -lt 5 ]; then
+            echo "WARNING: Very few webview files extracted"
+          fi
+
       - name: Cache app assets
         uses: actions/upload-artifact@v4
         with:
@@ -199,6 +210,17 @@ jobs:
         with:
           name: codex-app-cache
           path: app/
+        continue-on-error: true
+
+      - name: Sync extracted app to webview (if available)
+        run: |
+          if [ -d "app/webview" ]; then
+            mkdir -p codex-linux-fork/webview
+            rsync -av app/webview/ codex-linux-fork/webview/ 2>/dev/null || cp -r app/webview/* codex-linux-fork/webview/
+            echo "✓ Synced app/webview to codex-linux-fork/webview"
+          else
+            echo "Note: app/webview not available (using local webview)"
+          fi
 
       - name: Checkout codex-oss (OSS backend)
         run: |
@@ -212,6 +234,19 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
+
+      - name: Verify workspace
+        run: |
+          echo "Current directory: $(pwd)"
+          echo ""
+          echo "Structure:"
+          ls -la | grep -E "^d|codex"
+          echo ""
+          echo "codex-linux-fork/:"
+          ls -la codex-linux-fork/ | head -10
+          echo ""
+          echo "Webview status:"
+          ls -lh codex-linux-fork/webview/ 2>/dev/null | head -5 || echo "webview missing"
 
       - name: Build for ${{ matrix.distro }} / ${{ matrix.arch }}
         run: |
