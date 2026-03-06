@@ -84,27 +84,10 @@ jobs:
         run: |
           if [ "${{ steps.mode.outputs.mode }}" = "quick" ]; then
             # PR/dev builds: x86_64 + arm64, Ubuntu only
-            MATRIX='{
-              "include": [
-                {"arch": "x86_64", "docker_arch": "amd64", "distro": "ubuntu-22.04", "base": "ubuntu:22.04"},
-                {"arch": "arm64", "docker_arch": "arm64", "distro": "ubuntu-22.04", "base": "ubuntu:22.04"}
-              ]
-            }'
+            MATRIX='{"include":[{"arch":"x86_64","docker_arch":"amd64","distro":"ubuntu-22.04","base":"ubuntu:22.04"},{"arch":"arm64","docker_arch":"arm64","distro":"ubuntu-22.04","base":"ubuntu:22.04"}]}'
           else
             # Full release: all archs + distros
-            MATRIX='{
-              "include": [
-                {"arch": "x86_64", "docker_arch": "amd64", "distro": "ubuntu-22.04", "base": "ubuntu:22.04"},
-                {"arch": "arm64", "docker_arch": "arm64", "distro": "ubuntu-22.04", "base": "ubuntu:22.04"},
-                {"arch": "armv7l", "docker_arch": "arm/v7", "distro": "ubuntu-22.04", "base": "ubuntu:22.04"},
-                {"arch": "x86_64", "docker_arch": "amd64", "distro": "debian-11", "base": "debian:11-slim"},
-                {"arch": "arm64", "docker_arch": "arm64", "distro": "debian-11", "base": "debian:11-slim"},
-                {"arch": "x86_64", "docker_arch": "amd64", "distro": "fedora-38", "base": "fedora:38"},
-                {"arch": "arm64", "docker_arch": "arm64", "distro": "fedora-38", "base": "fedora:38"},
-                {"arch": "x86_64", "docker_arch": "amd64", "distro": "alpine-latest", "base": "alpine:latest"},
-                {"arch": "arm64", "docker_arch": "arm64", "distro": "alpine-latest", "base": "alpine:latest"}
-              ]
-            }'
+            MATRIX='{"include":[{"arch":"x86_64","docker_arch":"amd64","distro":"ubuntu-22.04","base":"ubuntu:22.04"},{"arch":"arm64","docker_arch":"arm64","distro":"ubuntu-22.04","base":"ubuntu:22.04"},{"arch":"armv7l","docker_arch":"arm/v7","distro":"ubuntu-22.04","base":"ubuntu:22.04"},{"arch":"x86_64","docker_arch":"amd64","distro":"debian-11","base":"debian:11-slim"},{"arch":"arm64","docker_arch":"arm64","distro":"debian-11","base":"debian:11-slim"},{"arch":"x86_64","docker_arch":"amd64","distro":"fedora-38","base":"fedora:38"},{"arch":"arm64","docker_arch":"arm64","distro":"fedora-38","base":"fedora:38"},{"arch":"x86_64","docker_arch":"amd64","distro":"alpine-latest","base":"alpine:latest"},{"arch":"arm64","docker_arch":"arm64","distro":"alpine-latest","base":"alpine:latest"}]}'
           fi
           echo "json=$MATRIX" >> $GITHUB_OUTPUT
 
