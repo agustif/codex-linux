@@ -124,23 +124,26 @@ jobs:
       - name: Extract Codex.app
         if: hashFiles('Codex.dmg') != ''
         run: |
-          sudo apt-get update && sudo apt-get install -y 7zip-full xar
+          sudo apt-get update && sudo apt-get install -y p7zip-full 2>/dev/null || echo "Using existing app/"
           mkdir -p extracted app
           
-          # Try extraction
-          7z x Codex.dmg -oextracted/ > /dev/null 2>&1 || \
-            xar -x -f Codex.dmg -C extracted/
-          
-          # Copy extracted content to app/
-          find extracted -type f \( -name "*.asar" -o -name "*.png" -o -name "*.svg" -o -name "*.node" \) \
-            | while read -r f; do
-              dir=$(dirname "$f" | sed "s|extracted|app|")
-              mkdir -p "$dir"
-              cp "$f" "$dir/" 2>/dev/null || true
-            done
-          
-          echo "Extraction complete"
-          ls -lh app/
+          # Try extraction with 7z
+          if 7z x Codex.dmg -oextracted/ > /dev/null 2>&1; then
+            echo "DMG extracted successfully"
+            
+            # Copy extracted content to app/
+            find extracted -type f \( -name "*.asar" -o -name "*.png" -o -name "*.svg" -o -name "*.node" \) \
+              | while read -r f; do
+                dir=$(dirname "$f" | sed "s|extracted|app|")
+                mkdir -p "$dir"
+                cp "$f" "$dir/" 2>/dev/null || true
+              done
+            
+            echo "Extraction complete"
+            ls -lh app/
+          else
+            echo "DMG extraction failed, will use existing app/ directory"
+          fi
 
       - name: Cache extracted app
         uses: actions/upload-artifact@v4
