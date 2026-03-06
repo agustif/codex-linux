@@ -1,0 +1,80 @@
+{
+  "name": "codex-linux",
+  "productName": "Codex",
+  "version": "0.1.0",
+  "description": "Codex for Linux - Community Fork from OpenAI's open-source code",
+  "homepage": "https://github.com/openai/codex",
+  "author": "Codex Linux Community",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "rebuild": "npx @electron/rebuild -v 33.0.0 -f -w better-sqlite3,node-pty",
+    "build:linux": "npx electron-builder --linux",
+    "build:deb": "npx electron-builder --linux deb",
+    "build:appimage": "npx electron-builder --linux AppImage",
+    "build:tarball": "npx electron-builder --linux tar.gz"
+  },
+  "devDependencies": {
+    "electron": "33.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.3"
+  },
+  "build": {
+    "appId": "com.community.codex-linux",
+    "productName": "Codex",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "webview/**/*",
+      "resources/**/*",
+      "bin/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "bin/codex",
+        "to": "codex"
+      },
+      {
+        "from": "resources/rg",
+        "to": "rg"
+      }
+    ],
+    "linux": {
+      "target": [
+        "deb",
+        "AppImage",
+        "tar.gz"
+      ],
+      "category": "Development",
+      "icon": "resources/icons",
+      "maintainer": "Codex Linux Community",
+      "vendor": "Community Fork",
+      "executableName": "codex",
+      "synopsis": "AI-powered coding assistant",
+      "description": "Codex is an AI coding assistant that helps you write, understand, and modify code."
+    },
+    "deb": {
+      "depends": [
+        "libsecret-1-0",
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libappindicator3-1"
+      ],
+      "priority": "optional"
+    },
+    "appImage": {}
+  }
+}
