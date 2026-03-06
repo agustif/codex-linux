@@ -226,7 +226,7 @@ jobs:
               ;;
             alpine-latest)
               apk add --no-cache \
-                build-base curl wget git openssl-dev \
+                build-base curl wget git openssl-dev perl \
                 libsecret-dev gtk+3.0 libnotify nss xdg-utils file \
                 python3 bash
               ;;
