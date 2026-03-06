@@ -167,11 +167,20 @@ jobs:
 
           rm -rf extracted app
           mkdir -p extracted app
-          7z x Codex.dmg -oextracted >/tmp/codex-7z.log
+          set +e
+          7z x Codex.dmg -oextracted >/tmp/codex-7z.log 2>&1
+          extract_status=$?
+          set -e
+
+          if [ "$extract_status" -ne 0 ] && [ "$extract_status" -ne 1 ] && [ "$extract_status" -ne 2 ]; then
+            tail -n 200 /tmp/codex-7z.log
+            exit "$extract_status"
+          fi
 
           RESOURCES_PATH="extracted/Codex Installer/Codex.app/Contents/Resources"
           if [ ! -d "$RESOURCES_PATH" ]; then
             echo "Expected resources path missing" >&2
+            tail -n 200 /tmp/codex-7z.log
             find extracted -maxdepth 4 -type d | sort
             exit 1
           fi
