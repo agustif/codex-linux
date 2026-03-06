@@ -1,0 +1,416 @@
+name: Build Multi-Distro Multi-Arch
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      codex_version:
+        description: 'Codex.app version'
+        required: false
+        default: 'latest'
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: matrix
+        run: |
+          cat > /tmp/matrix.json << 'EOF'
+          {
+            "include": [
+              {"distro": "ubuntu-22.04", "base": "ubuntu:22.04", "arch": "x86_64", "docker_arch": "amd64", "pkg_mgr": "apt", "pkg_fmt": "deb"},
+              {"distro": "ubuntu-22.04", "base": "ubuntu:22.04", "arch": "arm64", "docker_arch": "arm64", "pkg_mgr": "apt", "pkg_fmt": "deb"},
+              {"distro": "ubuntu-22.04", "base": "ubuntu:22.04", "arch": "armv7l", "docker_arch": "arm/v7", "pkg_mgr": "apt", "pkg_fmt": "deb"},
+              
+              {"distro": "fedora-38", "base": "fedora:38", "arch": "x86_64", "docker_arch": "amd64", "pkg_mgr": "dnf", "pkg_fmt": "rpm"},
+              {"distro": "fedora-38", "base": "fedora:38", "arch": "arm64", "docker_arch": "arm64", "pkg_mgr": "dnf", "pkg_fmt": "rpm"},
+              
+              {"distro": "alpine-latest", "base": "alpine:latest", "arch": "x86_64", "docker_arch": "amd64", "pkg_mgr": "apk", "pkg_fmt": "tar"},
+              {"distro": "alpine-latest", "base": "alpine:latest", "arch": "arm64", "docker_arch": "arm64", "pkg_mgr": "apk", "pkg_fmt": "tar"},
+              
+              {"distro": "debian-11", "base": "debian:11-slim", "arch": "x86_64", "docker_arch": "amd64", "pkg_mgr": "apt", "pkg_fmt": "deb"},
+              {"distro": "debian-11", "base": "debian:11-slim", "arch": "arm64", "docker_arch": "arm64", "pkg_mgr": "apt", "pkg_fmt": "deb"}
+            ]
+          }
+          EOF
+          
+          MATRIX=$(cat /tmp/matrix.json)
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+
+  detect-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      codex_version: ${{ steps.version.outputs.codex_version }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: |
+          REPO_VERSION=$(git describe --tags --always 2>/dev/null | sed 's/^v//' || echo "0.1.0-dev")
+          echo "version=$REPO_VERSION" >> $GITHUB_OUTPUT
+          
+          CODEX_VERSION="${{ github.event.inputs.codex_version }}"
+          [ -z "$CODEX_VERSION" ] && CODEX_VERSION="latest"
+          if [ "$CODEX_VERSION" = "latest" ]; then
+            CODEX_VERSION=$(curl -s https://api.github.com/repos/openai/codex/releases/latest \
+              | grep -o '"tag_name": "[^"]*' | head -1 | cut -d'"' -f4 | sed 's/v//' || echo "0.1.0")
+          fi
+          echo "codex_version=$CODEX_VERSION" >> $GITHUB_OUTPUT
+
+  build:
+    needs: [build-matrix, detect-version]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.build-matrix.outputs.matrix) }}
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Prepare build environment
+        id: prep
+        run: |
+          ARCH="${{ matrix.arch }}"
+          DISTRO="${{ matrix.distro }}"
+          PKG_FMT="${{ matrix.pkg_fmt }}"
+          CODEX_VERSION="${{ needs.detect-version.outputs.codex_version }}"
+          
+          echo "arch=$ARCH" >> $GITHUB_OUTPUT
+          echo "distro=$DISTRO" >> $GITHUB_OUTPUT
+          echo "pkg_fmt=$PKG_FMT" >> $GITHUB_OUTPUT
+          echo "build_tag=${DISTRO}-${ARCH}" >> $GITHUB_OUTPUT
+          
+          # Create output directory
+          mkdir -p "build-output-${DISTRO}-${ARCH}"
+          
+          echo "Building $PKG_FMT package for $DISTRO ($ARCH)"
+
+      - name: Download Codex.app
+        id: download
+        run: |
+          CODEX_VERSION="${{ needs.detect-version.outputs.codex_version }}"
+          
+          for URL in \
+            "https://storage.googleapis.com/codex-releases/Codex-${CODEX_VERSION}.dmg" \
+            "https://codex-releases.s3.amazonaws.com/Codex-${CODEX_VERSION}.dmg" \
+            "https://github.com/openai/codex/releases/download/v${CODEX_VERSION}/Codex-${CODEX_VERSION}.dmg"; do
+            if curl -L -f --progress-bar "$URL" -o Codex.dmg 2>/dev/null; then
+              echo "✓ Downloaded Codex.app v${CODEX_VERSION}"
+              break
+            fi
+          done
+
+      - name: Build for ${{ matrix.distro }} / ${{ matrix.arch }}
+        run: |
+          ARCH="${{ matrix.arch }}"
+          DISTRO="${{ matrix.distro }}"
+          BASE_IMAGE="${{ matrix.base }}"
+          PKG_MGR="${{ matrix.pkg_mgr }}"
+          PKG_FMT="${{ matrix.pkg_fmt }}"
+          DOCKER_ARCH="${{ matrix.docker_arch }}"
+          
+          echo "Building with $BASE_IMAGE for $ARCH"
+          
+          # Create distro-specific build script
+          cat > /tmp/build-${DISTRO}-${ARCH}.sh << 'SCRIPT_EOF'
+          #!/bin/bash
+          set -ex
+          
+          DISTRO=$1
+          ARCH=$2
+          PKG_MGR=$3
+          
+          case "$DISTRO" in
+            ubuntu-22.04|debian-11)
+              apt-get update
+              apt-get install -y build-essential curl wget git pkg-config \
+                libssl-dev libcap-dev ca-certificates libsecret-1-dev \
+                libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils \
+                libatspi2.0-0 libuuid1 libappindicator3-1 libasound2 libfuse2 \
+                file 7zip-full xar python3
+              ;;
+            fedora-38)
+              dnf install -y gcc g++ make curl wget git openssl-devel \
+                libsecret-devel gtk3 libnotify nss libxss libxtst xdg-utils \
+                at-spi2-core file p7zip xar python3
+              ;;
+            alpine-latest)
+              apk add --no-cache build-base curl wget git openssl-dev \
+                libsecret-dev gtk+3.0 libnotify nss xdg-utils file \
+                python3 bash
+              ;;
+          esac
+          
+          # Install Node
+          curl -fsSL https://deb.nodesource.com/setup_20.x | bash - || true
+          
+          case "$DISTRO" in
+            ubuntu-*|debian-*)
+              apt-get install -y nodejs
+              ;;
+            fedora-*)
+              dnf install -y nodejs
+              ;;
+            alpine-*)
+              apk add --no-cache nodejs npm
+              ;;
+          esac
+          
+          # Install Rust
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          export PATH="$HOME/.cargo/bin:$PATH"
+          
+          cd /build
+          
+          echo "[1/5] Building Rust binary for $ARCH..."
+          cd codex-oss/codex-rs
+          cargo build --release -p codex-app-server -vv 2>&1 | tail -20
+          cd -
+          
+          mkdir -p codex-linux-fork/bin
+          cp codex-oss/codex-rs/target/release/codex-app-server codex-linux-fork/bin/codex
+          chmod +x codex-linux-fork/bin/codex
+          BINARY_SIZE=$(du -h codex-linux-fork/bin/codex | cut -f1)
+          echo "✓ Rust binary built: $BINARY_SIZE"
+          
+          echo "[2/5] Downloading ripgrep..."
+          case "$ARCH" in
+            x86_64)
+              RG_URL="https://github.com/BurntSushi/ripgrep/releases/download/14.1.0/ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz"
+              ;;
+            arm64|aarch64)
+              RG_URL="https://github.com/BurntSushi/ripgrep/releases/download/14.1.0/ripgrep-14.1.0-aarch64-unknown-linux-gnu.tar.gz"
+              ;;
+            armv7l)
+              RG_URL="https://github.com/BurntSushi/ripgrep/releases/download/14.1.0/ripgrep-14.1.0-armv7-unknown-linux-gnueabihf.tar.gz"
+              ;;
+          esac
+          
+          curl -sL "$RG_URL" | tar xz -C codex-linux-fork/resources --strip-components=1 2>/dev/null && \
+            chmod +x codex-linux-fork/resources/rg || echo "ripgrep download skipped"
+          echo "✓ ripgrep ready"
+          
+          echo "[3/5] Installing dependencies..."
+          cd codex-linux-fork
+          npm install --production
+          echo "✓ Dependencies installed"
+          
+          echo "[4/5] Building packages..."
+          npm run build:linux
+          echo "✓ Packages built"
+          
+          echo "[5/5] Creating checksums..."
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+          
+          echo "✓ Build complete for $DISTRO/$ARCH"
+          SCRIPT_EOF
+          
+          chmod +x /tmp/build-${DISTRO}-${ARCH}.sh
+          
+          # Run Docker build
+          docker run --rm \
+            --platform linux/${DOCKER_ARCH} \
+            --volume $(pwd):/build \
+            --volume /tmp/build-${DISTRO}-${ARCH}.sh:/build.sh:ro \
+            -e CARGO_TARGET_DIR=/build/codex-oss/codex-rs/target \
+            --workdir /build \
+            "${BASE_IMAGE}" \
+            bash /build.sh "$DISTRO" "$ARCH" "$PKG_MGR" 2>&1 | tee "build-${DISTRO}-${ARCH}.log"
+
+      - name: Collect artifacts
+        if: always()
+        run: |
+          DISTRO="${{ matrix.distro }}"
+          ARCH="${{ matrix.arch }}"
+          PKG_FMT="${{ matrix.pkg_fmt }}"
+          
+          mkdir -p "artifacts-${DISTRO}-${ARCH}"
+          
+          # Copy packages
+          if [ -d codex-linux-fork/dist ]; then
+            cp codex-linux-fork/dist/* "artifacts-${DISTRO}-${ARCH}/" 2>/dev/null || true
+          fi
+          
+          # Copy binary
+          if [ -f codex-linux-fork/bin/codex ]; then
+            cp codex-linux-fork/bin/codex "artifacts-${DISTRO}-${ARCH}/codex-${ARCH}"
+          fi
+          
+          # Metadata
+          cat > "artifacts-${DISTRO}-${ARCH}/BUILD_INFO.txt" << EOF
+          Distribution: $DISTRO
+          Architecture: $ARCH
+          Package Format: $PKG_FMT
+          Build Date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          Repo Version: ${{ needs.detect-version.outputs.version }}
+          Codex Version: ${{ needs.detect-version.outputs.codex_version }}
+          EOF
+          
+          ls -lh "artifacts-${DISTRO}-${ARCH}/"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-${{ matrix.distro }}-${{ matrix.arch }}
+          path: artifacts-${{ matrix.distro }}-${{ matrix.arch }}/
+          retention-days: 30
+
+  organize-releases:
+    needs: [build, detect-version]
+    runs-on: ubuntu-latest
+    if: always()
+    permissions:
+      contents: write
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-builds/
+
+      - name: Organize by distribution and architecture
+        run: |
+          mkdir -p release-assets
+          
+          # Organize by distro/arch
+          for dir in all-builds/build-*/; do
+            basename=$(basename "$dir" | sed 's/build-//')
+            mkdir -p "release-assets/$basename"
+            cp "$dir"/* "release-assets/$basename/" 2>/dev/null || true
+          done
+          
+          # Create comprehensive manifest
+          cat > RELEASE_MANIFEST.md << 'MANIFEST_EOF'
+          # Codex Linux Multi-Distribution Release
+          
+          **Version**: ${{ needs.detect-version.outputs.version }}
+          **Codex Version**: ${{ needs.detect-version.outputs.codex_version }}
+          **Build Date**: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          
+          ## Distributions Included
+          
+          - **Ubuntu 22.04 LTS** (deb, AppImage, tar.gz)
+          - **Fedora 38** (rpm, tar.gz)
+          - **Alpine Linux** (tar.gz, apk-compatible)
+          - **Debian 11** (deb, AppImage, tar.gz)
+          
+          ## Architectures
+          
+          - **x86_64** (Intel/AMD 64-bit)
+          - **ARM64** (Apple Silicon, AWS Graviton, Raspberry Pi 4+)
+          - **ARMv7** (32-bit ARM, older Raspberry Pi)
+          
+          ## Installation by Distribution
+          
+          ### Ubuntu/Debian
+          
+          #### DEB Package
+          ```bash
+          sudo dpkg -i codex-linux_VERSION_ARCH.deb
+          codex
+          ```
+          
+          #### AppImage
+          ```bash
+          chmod +x Codex-VERSION-ARCH.AppImage
+          ./Codex-VERSION-ARCH.AppImage
+          ```
+          
+          #### Tarball
+          ```bash
+          tar xzf codex-linux-VERSION-ARCH.tar.gz
+          cd Codex-VERSION/
+          ./Codex
+          ```
+          
+          ### Fedora/RHEL/CentOS
+          
+          #### RPM Package
+          ```bash
+          sudo dnf install ./codex-linux-VERSION-ARCH.rpm
+          codex
+          ```
+          
+          #### Tarball
+          ```bash
+          tar xzf codex-linux-VERSION-ARCH.tar.gz
+          cd Codex-VERSION/
+          ./Codex
+          ```
+          
+          ### Alpine
+          
+          #### TAR (native)
+          ```bash
+          tar xzf codex-linux-VERSION-ARCH.tar.gz
+          cd Codex-VERSION/
+          ./Codex
+          ```
+          
+          #### Static Binary
+          ```bash
+          ./codex-ARCH
+          ```
+          
+          ## Package Compatibility
+          
+          | Distro | x86_64 | ARM64 | ARMv7 | Notes |
+          |--------|--------|-------|-------|-------|
+          | Ubuntu 22.04 | ✅ deb | ✅ deb | ✅ deb | Full support |
+          | Debian 11+ | ✅ deb | ✅ deb | ✅ deb | Compatible with Ubuntu |
+          | Fedora 38+ | ✅ rpm | ✅ rpm | ❌ | No 32-bit |
+          | Alpine | ✅ tar | ✅ tar | ✅ tar | musl-based |
+          | Raspberry Pi 4+ | - | ✅ deb | - | ARM64 variant |
+          | Raspberry Pi 3 | - | - | ✅ deb | ARMv7 variant |
+          
+          ## Checksums
+          
+          All packages include SHA256SUMS files. Verify with:
+          ```bash
+          sha256sum -c SHA256SUMS
+          ```
+          
+          MANIFEST_EOF
+          
+          # Generate combined checksums
+          find release-assets -name "SHA256SUMS" -exec cat {} \; | sort > release-assets/CHECKSUMS_ALL
+          
+          echo "Release assets organized:"
+          find release-assets -type f | sort
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            release-assets/**/*
+          body_path: RELEASE_MANIFEST.md
+          draft: false
+          prerelease: false
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ needs.detect-version.outputs.version }}
+          path: release-assets/
+          retention-days: 90

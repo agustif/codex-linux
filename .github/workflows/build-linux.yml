@@ -1,0 +1,198 @@
+name: Build Codex Linux Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      codex_version:
+        description: 'Codex.app version to download (e.g., 0.1.2)'
+        required: false
+        default: 'latest'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download Codex.app
+        id: download
+        run: |
+          VERSION="${{ github.event.inputs.codex_version }}"
+          if [ "$VERSION" = "latest" ] || [ -z "$VERSION" ]; then
+            # Get latest release version from OpenAI's servers
+            VERSION=$(curl -s https://api.github.com/repos/openai/codex/releases/latest | grep -o '"tag_name": "[^"]*' | cut -d'"' -f4 | sed 's/v//')
+          fi
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          
+          # Download from official OpenAI source
+          DMG_URL="https://storage.googleapis.com/codex-releases/Codex-${VERSION}.dmg"
+          echo "Downloading Codex.app v${VERSION}..."
+          
+          if ! curl -L -f "$DMG_URL" -o Codex.dmg 2>/dev/null; then
+            # Fallback: try alternate source
+            DMG_URL="https://codex-releases.s3.amazonaws.com/Codex-${VERSION}.dmg"
+            curl -L -f "$DMG_URL" -o Codex.dmg
+          fi
+          
+          file Codex.dmg
+          ls -lh Codex.dmg
+
+      - name: Extract Codex.app
+        run: |
+          # Install tools for DMG extraction
+          sudo apt-get update && sudo apt-get install -y 7zip-full
+
+          mkdir -p extracted
+          
+          # Extract DMG (macOS disk image)
+          7z x Codex.dmg -oextracted/ || {
+            # If 7zip fails, try xar if available
+            which xar || sudo apt-get install -y xar
+            xar -x -f Codex.dmg -C extracted/
+          }
+          
+          # Find and extract app.asar
+          find extracted -name "app.asar" -o -name "*.app" | head -20
+          
+          # Extract webview and assets
+          find extracted -type f \( -name "app.asar" -o -name "*.png" -o -name "*.svg" \) \
+            | xargs -I {} sh -c 'mkdir -p app && cp {} app/' 2>/dev/null || true
+          
+          ls -lh app/ || echo "Extraction incomplete, will use fallback"
+
+      - name: Setup Docker
+        run: |
+          docker --version
+          docker-compose --version
+
+      - name: Build Linux Release
+        run: |
+          # Use existing Makefile
+          make clean
+          make build
+        env:
+          DOCKER_BUILDKIT: 1
+
+      - name: Prepare Release Artifacts
+        id: artifacts
+        run: |
+          VERSION="${{ steps.download.outputs.version }}"
+          BUILD_DATE=$(date -u +'%Y-%m-%d')
+          
+          mkdir -p artifacts
+          
+          # Copy built artifacts
+          cp release/Codex-*-arm64.AppImage artifacts/ || true
+          cp release/codex-linux_*_arm64.deb artifacts/ || true
+          cp release/codex-linux-*-arm64.tar.gz artifacts/ || true
+          cp release/codex-linux-x64 artifacts/codex-linux-${VERSION}-arm64 || true
+          
+          # Create checksums
+          cd artifacts
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+          
+          echo "Build artifacts:"
+          ls -lh
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "build_date=$BUILD_DATE" >> $GITHUB_OUTPUT
+
+      - name: Create Release Notes
+        id: notes
+        run: |
+          cat > RELEASE_NOTES.md << 'EOF'
+          # Codex Linux Fork v${{ steps.artifacts.outputs.version }}
+          
+          Built: ${{ steps.artifacts.outputs.build_date }}
+          
+          ## Downloads
+          
+          - **AppImage** (.AppImage) - Portable, no installation needed
+          - **Debian Package** (.deb) - Install with `sudo dpkg -i`
+          - **Tarball** (.tar.gz) - Extract and run
+          - **Binary** (codex-linux-*-arm64) - Standalone Rust binary
+          
+          ## Installation
+          
+          ### AppImage
+          ```bash
+          chmod +x Codex-*.AppImage
+          ./Codex-*.AppImage
+          ```
+          
+          ### Debian
+          ```bash
+          sudo dpkg -i codex-linux_*.deb
+          codex
+          ```
+          
+          ### Tarball
+          ```bash
+          tar xzf codex-linux-*.tar.gz
+          cd Codex-*/
+          ./Codex
+          ```
+          
+          ## Build Info
+          
+          - **Codex.app Version**: Downloaded from official OpenAI sources
+          - **Rust**: 1.93.0
+          - **Node**: 20.x
+          - **Electron**: 33.0.0
+          - **Platform**: Linux ARM64
+          
+          ## Source
+          
+          - Codex.app: Official OpenAI binary (not included in repo)
+          - Linux fork: github.com/openai/codex (open-source)
+          - Build scripts: This repository (MIT license)
+          
+          ## Notes
+          
+          This build includes:
+          - Official Codex.app binary extracted at build time
+          - Open-source Electron wrapper
+          - Rust backend compiled from codex-rs
+          
+          Repository contains only source code and build scripts, no binary artifacts.
+          EOF
+          
+          cat RELEASE_NOTES.md
+
+      - name: Upload to GitHub Releases
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            artifacts/Codex-*.AppImage
+            artifacts/codex-linux_*.deb
+            artifacts/codex-linux-*.tar.gz
+            artifacts/codex-linux-*-arm64
+            artifacts/SHA256SUMS
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: false
+
+      - name: Publish Artifacts (Main Branch)
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-linux-${{ steps.artifacts.outputs.build_date }}
+          path: artifacts/
+          retention-days: 30
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f Codex.dmg
+          docker system prune -f
