@@ -19,8 +19,6 @@ jobs:
     
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: false
 
       - name: Download Codex.app
         id: download
