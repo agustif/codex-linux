@@ -1,54 +1,46 @@
 # Codex Linux Fork
 
-> ⚠️ **UNOFFICIAL - NOT AFFILIATED WITH OpenAI**
->
-> This is a **community-maintained Linux build** of the Codex.app backend and UI. This project is **NOT** endorsed, maintained, or supported by OpenAI. Use at your own risk.
+**UNOFFICIAL - NOT AFFILIATED WITH OpenAI**
 
-## Disclaimer
+This is a community-maintained Linux build of the Codex.app backend and UI. This project is NOT endorsed, maintained, or supported by OpenAI. Use at your own risk.
 
-- **This project is unofficial** and has no affiliation with OpenAI
-- **Codex.app is proprietary** - this project only provides Linux packaging and build infrastructure
-- **Use at your own risk** - no warranty or support from OpenAI
-- **Respect the license** - Codex.app has its own EULA; follow it
-- **Open Source Components** - This repository contains only OSS build scripts and the OSS codex-rs backend
-
-See [LICENSE](LICENSE) and [LEGAL.md](LEGAL.md) for details.
+See [LEGAL.md](LEGAL.md) for complete disclaimer and licensing information.
 
 ---
 
-## What is This?
+## Overview
 
-This project provides a **complete Linux build system** for Codex, the AI code assistant from OpenAI.
+This project provides a complete Linux build system for Codex, the AI code assistant from OpenAI.
 
 It consists of:
 
-1. **Codex Backend** (Rust)
+1. **Codex Backend (Rust)**
    - Open-source: [github.com/openai/codex](https://github.com/openai/codex)
    - Compiled from source for Linux
-   - Provides API and websocket server
+   - Provides API and WebSocket server
 
-2. **Codex UI** (Electron)
-   - Extracted from Codex.app
-   - Rebuilt as Linux Electron app
+2. **Codex UI (Electron)**
+   - Extracted from Codex.app macOS binary
+   - Rebuilt as native Linux Electron application
    - Communicates with backend via JSON-RPC
 
-3. **Build Infrastructure** (This repo)
-   - Docker build system
-   - CI/CD pipelines (GitHub Actions)
-   - Multi-distro support (Ubuntu, Fedora, Alpine, Debian)
-   - Multi-arch (x86_64, ARM64, ARMv7)
+3. **Build Infrastructure**
+   - Docker-based reproducible builds
+   - GitHub Actions CI/CD pipeline
+   - Multi-distribution support (Ubuntu, Debian, Fedora, Alpine)
+   - Multi-architecture support (x86_64, ARM64, ARMv7)
 
-## ✨ Features
+## Features
 
-- ✅ **Multiple Linux Distributions**: Ubuntu, Debian, Fedora, Alpine
-- ✅ **Multiple Architectures**: x86_64, ARM64 (Raspberry Pi 4+), ARMv7
-- ✅ **Multiple Packages**: .deb, .rpm, AppImage, tarballs
-- ✅ **Automated CI/CD**: GitHub Actions builds and releases
-- ✅ **Zero Vendor**: Only source code in repo, Codex.app downloaded at build time
-- ✅ **Open Source**: Build scripts and infrastructure are MIT licensed
-- ✅ **Reproducible**: Docker-based builds for consistency
+- **Multiple Linux Distributions**: Ubuntu 22.04, Debian 11, Fedora 38, Alpine
+- **Multiple Architectures**: x86_64, ARM64 (Raspberry Pi 4+), ARMv7 (Raspberry Pi 3)
+- **Multiple Package Formats**: .deb, .rpm, AppImage, tarballs
+- **Automated CI/CD**: GitHub Actions with multi-matrix builds and releases
+- **Zero Vendor Approach**: Codex.app downloaded at build time, only source code in repository
+- **Open Source**: Build scripts and infrastructure under MIT license
+- **Reproducible Builds**: Docker-based for consistency across platforms
 
-## 📦 Quick Start
+## Quick Start
 
 ### Ubuntu/Debian
 
@@ -74,78 +66,82 @@ chmod +x Codex-0.1.0-arm64.AppImage
 ./Codex-0.1.0-arm64.AppImage
 ```
 
-### Or Build Locally
+### Build Locally
 
 ```bash
 git clone https://github.com/openai/codex-linux
 cd codex-linux
-make ci-build  # Downloads Codex.app and builds
+make quick       # Fast build with x86_64 + arm64
+# or
+make ci-build    # Full CI build (downloads Codex.app)
 ```
 
-## 🏗️ Architecture
+## Architecture
 
 ```
-┌──────────────────────────────────────┐
-│ Codex.app (macOS binary)             │
-│ ↓ (extracted at build time)          │
-│ - Webview UI (React)                 │
-│ - Assets & resources                 │
-└──────────────────────────────────────┘
-              ↓
-┌──────────────────────────────────────┐
-│ Build System (This Repo)             │
-│ - Docker container                   │
-│ - Electron builder                   │
-│ - Multi-arch compilation             │
-└──────────────────────────────────────┘
-              ↓
-┌──────────────────────────────────────┐
-│ Codex-rs (OSS Backend)               │
-│ github.com/openai/codex              │
-│ - Rust binary compilation            │
-│ - API server (JSON-RPC)              │
-│ - WebSocket support                  │
-└──────────────────────────────────────┘
-              ↓
-┌──────────────────────────────────────┐
-│ Linux Packages                       │
-│ .deb, .rpm, AppImage, .tar.gz        │
-│ x86_64, arm64, armv7                 │
-└──────────────────────────────────────┘
+Codex.app (macOS binary, extracted at build time)
+  |
+  +-- Webview UI (React/Vite)
+  +-- Assets & resources
+  |
+  v
+Build System (This Repository)
+  |
+  +-- Docker container environment
+  +-- Electron builder
+  +-- Multi-architecture compilation
+  |
+  v
+Codex-rs (OSS Backend)
+  |
+  +-- Rust binary compilation (codex-app-server)
+  +-- API server (JSON-RPC over WebSocket/stdio)
+  |
+  v
+Linux Packages
+  |
+  +-- .deb (Ubuntu, Debian)
+  +-- .rpm (Fedora, RHEL)
+  +-- AppImage (Universal)
+  +-- .tar.gz (All platforms)
+  +-- Architectures: x86_64, arm64, armv7
 ```
 
-## 📋 Supported Platforms
+## Supported Platforms
 
 ### Distributions
 
-| Distro | Version | Arch | Package | Status |
-|--------|---------|------|---------|--------|
-| Ubuntu | 22.04 LTS | x86_64, arm64, armv7 | deb, AppImage | ✅ |
-| Debian | 11, 12 | x86_64, arm64, armv7 | deb, AppImage | ✅ |
-| Fedora | 38, 39 | x86_64, arm64 | rpm | ✅ |
-| Alpine | Latest, 3.18 | x86_64, arm64 | tar, apk | ✅ |
+| Distribution | Version | Architectures | Package Format | Status |
+|--------------|---------|---------------|----------------|--------|
+| Ubuntu | 22.04 LTS | x86_64, arm64, armv7 | deb, AppImage, tar.gz | Supported |
+| Debian | 11+ | x86_64, arm64, armv7 | deb, AppImage, tar.gz | Supported |
+| Fedora | 38+ | x86_64, arm64 | rpm, tar.gz | Supported |
+| Alpine | Latest, 3.18 | x86_64, arm64 | tar.gz, apk | Supported |
 
 ### Devices
 
-- **Intel/AMD**: Any x86_64 Linux
-- **Apple Silicon**: Via Docker Desktop or UTM
-- **Raspberry Pi 4+**: ARM64 (Raspberry Pi OS 64-bit)
-- **Raspberry Pi 3**: ARMv7 (Raspberry Pi OS 32-bit)
-- **AWS Graviton**: ARM64 instances
-- **Embedded/IoT**: Any ARM device
+- Intel/AMD x86_64: Any Linux distribution
+- Apple Silicon: Via Docker Desktop or UTM
+- Raspberry Pi 4+: ARM64 with Raspberry Pi OS 64-bit
+- Raspberry Pi 3: ARMv7 with Raspberry Pi OS 32-bit
+- AWS Graviton: ARM64 instances
+- Embedded/IoT: Any ARM-based Linux device
 
-## 🔧 Build System
+## Build System
 
-### Local Build
+### Local Builds
 
 ```bash
-# Quick build (requires extracted app/ directory)
-make build
+# Quick build (x86_64 + arm64, Ubuntu only)
+make quick
 
-# Full CI-style build (downloads Codex.app)
+# Full build (all architectures and distributions)
+make full
+
+# Manual CI-style build with Codex.app download
 make ci-build
 
-# Build specific format
+# Build-specific formats (requires app/ directory)
 make deb
 make appimage
 make tarball
@@ -153,29 +149,82 @@ make tarball
 
 ### CI/CD Pipeline
 
-Automatic builds on:
-- **Tag push** (`v*`) → GitHub Release
-- **Main branch** → Artifacts (30 days)
-- **Manual dispatch** → Custom version
+Triggered automatically on:
+- **Tag push** (v*): Creates GitHub Release with all packages
+- **Push to main/develop**: Builds and uploads artifacts (30 days retention)
+- **Manual dispatch**: Specify custom Codex.app version
 
-Builds all combinations:
-- 3+ distributions × 2-3 architectures
-- Total: ~12 build jobs
-- Time: 1-2 hours
+**Build Matrix:**
+- Quick mode (PRs): 2 architectures × 1 distribution (x86_64, arm64 on Ubuntu)
+- Full mode (releases): 3 architectures × 3+ distributions (x86_64, arm64, armv7 on Ubuntu, Debian, Fedora, Alpine)
 
-See [CI_CD.md](CI_CD.md) for full details.
+See [CI_CD.md](CI_CD.md) for complete CI/CD documentation.
 
-## 📚 Documentation
+## Build Artifacts
+
+| Component | Size |
+|-----------|------|
+| Rust binary (codex-app-server) | ~54 MB |
+| .deb package | ~108 MB |
+| AppImage | ~142 MB |
+| .tar.gz tarball | ~139 MB |
+
+All packages include SHA256 checksums. Verify with:
+```bash
+sha256sum -c SHA256SUMS
+```
+
+## Getting Started
+
+### For Users
+
+1. Download a pre-built package from [Releases](https://github.com/openai/codex-linux/releases)
+2. Install for your distribution (see [DISTRO_SUPPORT.md](DISTRO_SUPPORT.md))
+3. Run `codex` to start
+
+### For Developers
+
+1. Clone the repository:
+   ```bash
+   git clone --recursive https://github.com/openai/codex-linux
+   cd codex-linux
+   ```
+
+2. Install dependencies:
+   - Docker and Docker Compose
+   - Git with large file support (for Codex.app extraction)
+   - 50GB free disk space (for Docker build)
+
+3. Build:
+   ```bash
+   make quick        # Quick local build
+   make ci-build     # Full build with Codex.app download
+   ```
+
+4. Find artifacts in `./release/`
+
+### For Continuous Integration
+
+1. Fork the repository
+2. Push a semantic version tag:
+   ```bash
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
+3. GitHub Actions automatically builds and creates a release
+
+## Documentation
 
 | Document | Purpose |
 |----------|---------|
-| [CI_CD.md](CI_CD.md) | CI/CD architecture, GitHub Actions, local testing |
-| [BUILD_MATRIX.md](BUILD_MATRIX.md) | Multi-arch support, platforms, troubleshooting |
-| [DISTRO_SUPPORT.md](DISTRO_SUPPORT.md) | Per-distro installation, compatibility, performance |
-| [CODEX_REVERSE_ENGINEERING.md](CODEX_REVERSE_ENGINEERING.md) | Technical deep-dive, binary analysis |
-| [AGENTS.md](AGENTS.md) | Build commands, project structure |
+| [CI_CD.md](CI_CD.md) | CI/CD architecture, workflows, local testing |
+| [BUILD_MATRIX.md](BUILD_MATRIX.md) | Multi-architecture support, platforms, troubleshooting |
+| [DISTRO_SUPPORT.md](DISTRO_SUPPORT.md) | Per-distribution installation, compatibility, performance |
+| [CODEX_REVERSE_ENGINEERING.md](CODEX_REVERSE_ENGINEERING.md) | Technical deep-dive, binary analysis, architecture |
+| [LEGAL.md](LEGAL.md) | Legal disclaimer, licensing, intellectual property |
+| [AGENTS.md](AGENTS.md) | Build commands, project structure, development guide |
 
-## ⚖️ Legal & Licensing
+## Legal & Licensing
 
 ### This Repository
 
@@ -194,18 +243,18 @@ copies or substantial portions of the Software.
 
 **License**: MIT ([LICENSE](LICENSE))
 
-### Codex Components
+### Component Licenses
 
 | Component | License | Source | Status |
 |-----------|---------|--------|--------|
-| **codex-rs** | Apache-2.0 | [github.com/openai/codex](https://github.com/openai/codex) | ✅ OSS |
-| **Codex.app UI** | Proprietary | Downloaded at build | ⚠️ Proprietary |
-| **Build Scripts** | MIT | This repository | ✅ OSS |
+| Build scripts & infrastructure | MIT | This repository | Open Source |
+| codex-rs backend | Apache-2.0 | [github.com/openai/codex](https://github.com/openai/codex) | Open Source |
+| Codex.app UI | Proprietary | Downloaded at build time | Proprietary |
 
 ### Important Notes
 
 1. **Codex.app is NOT included in this repository**
-   - It's downloaded from OpenAI at build time
+   - Downloaded from OpenAI at build time
    - You accept the Codex.app EULA when building
    - See https://codex.openai.com/ for terms
 
@@ -221,74 +270,14 @@ copies or substantial portions of the Software.
 
 See [LEGAL.md](LEGAL.md) for full legal information.
 
-## 🚀 Getting Started
+## Troubleshooting
 
-### For Users
+### Build Failures
 
-1. Download a pre-built package from [Releases](https://github.com/openai/codex-linux/releases)
-2. Install for your distro (see [DISTRO_SUPPORT.md](DISTRO_SUPPORT.md))
-3. Run `codex` to start
-
-### For Developers
-
-1. Clone the repo:
-   ```bash
-   git clone --recursive https://github.com/openai/codex-linux
-   cd codex-linux
-   ```
-
-2. Install Docker and Docker Compose
-
-3. Build:
-   ```bash
-   make ci-build  # Full build with download
-   # or
-   make build     # Quick build (requires app/ directory)
-   ```
-
-4. Find artifacts in `./release/`
-
-### For CI/CD
-
-1. Fork the repository
-2. Push a tag: `git tag v0.1.0 && git push origin v0.1.0`
-3. GitHub Actions automatically builds and creates a release
-
-## 🔍 Technical Details
-
-### What's Included
-
-- **Rust Backend**: Compiled from codex-rs source
-- **Electron Wrapper**: Rebuilt as native Linux app
-- **Webview Assets**: Extracted from Codex.app
-- **Build System**: Docker, npm, cargo
-
-### What's NOT Included
-
-- ❌ Codex.app binary (downloaded at build time)
-- ❌ Proprietary components
-- ❌ API keys or credentials
-- ❌ Analytics or telemetry
-
-### Build Sizes
-
-| Component | Size |
-|-----------|------|
-| Rust binary | 54 MB |
-| .deb package | 108 MB |
-| AppImage | 142 MB |
-| .tar.gz | 139 MB |
-
-## 🐛 Troubleshooting
-
-### Build Fails
-
-1. **Docker not running**: Start Docker daemon
-2. **Out of disk space**: Need ~50GB for Docker
-3. **Codex.app download fails**: Check internet, try manual download
-4. **Permission denied**: Use `sudo` or `docker` group
-
-See [BUILD_MATRIX.md](BUILD_MATRIX.md#troubleshooting) for distro-specific issues.
+1. Ensure Docker is running and has sufficient resources
+2. Verify 50GB free disk space
+3. Check network connectivity for Codex.app download
+4. Review GitHub Actions logs for detailed error messages
 
 ### Runtime Issues
 
@@ -296,80 +285,42 @@ See [BUILD_MATRIX.md](BUILD_MATRIX.md#troubleshooting) for distro-specific issue
    ```bash
    # Ubuntu/Debian
    sudo apt install libgtk-3-0 libnotify4
-   
+
    # Fedora
    sudo dnf install gtk3 libnotify
    ```
 
-2. **Permission denied**: Make binary executable
+2. **Permission denied on AppImage**
    ```bash
    chmod +x Codex-*.AppImage
    ```
 
-3. **Cannot find codex**: Add to PATH
+3. **Binary not found**: Add to PATH or use absolute path
    ```bash
    export PATH="/opt/codex:$PATH"
    ```
 
-## 🤝 Contributing
+See [BUILD_MATRIX.md](BUILD_MATRIX.md#troubleshooting) for distribution-specific issues.
+
+## Contributing
 
 ### Improving the Build System
 
 1. Fork the repository
-2. Create a branch: `git checkout -b feature/my-improvement`
+2. Create a feature branch: `git checkout -b feature/improvement`
 3. Make changes
-4. Test locally: `make build`
-5. Push and open a PR
+4. Test locally: `make quick`
+5. Push and open a pull request
 
-### Adding Distro Support
+### Adding Distribution Support
 
 See [DISTRO_SUPPORT.md](DISTRO_SUPPORT.md#contributing-new-distributions)
 
 ### Reporting Issues
 
-- **Build failures**: Include Docker version and distro
-- **Runtime issues**: Include distro, arch, package format
-- **Feature requests**: Describe use case
-
-## 📞 Support
-
-This is a **community project** with **no official support**.
-
-### Getting Help
-
-- **GitHub Issues**: Report bugs or ask questions
-- **GitHub Discussions**: General help and sharing
-- **Documentation**: See [docs/](docs/) directory
-- **OpenAI**: For Codex itself, see https://codex.openai.com/
-
-### NOTE: Not OpenAI Support
-
-OpenAI does not provide support for this project. For official Codex issues, contact OpenAI directly.
-
-## 🎯 Roadmap
-
-### Current
-- ✅ Multi-arch builds (x86_64, arm64, armv7l)
-- ✅ Multi-distro packages (Ubuntu, Fedora, Alpine, Debian)
-- ✅ GitHub Actions CI/CD
-- ✅ Zero vendor approach
-
-### Planned
-- [ ] RPM/DNF package improvements
-- [ ] Snap Store integration
-- [ ] Flatpak support
-- [ ] AUR package (Arch Linux)
-- [ ] Code signing for releases
-- [ ] Docker Hub images
-- [ ] Multi-distro testing matrix
-
-## 📄 License Summary
-
-| Component | License | Link |
-|-----------|---------|------|
-| Build scripts | MIT | [LICENSE](LICENSE) |
-| codex-rs | Apache-2.0 | [codex-oss/LICENSE](codex-oss/LICENSE) |
-| Codex.app | Proprietary | [EULA](https://codex.openai.com/) |
+- **Build failures**: Include Docker version and distribution
+- **Runtime issues**: Include distribution, architecture, package format
+- **Feature requests**: Describe use case and requirements
 
 ## Related Projects
 
@@ -378,9 +329,22 @@ OpenAI does not provide support for this project. For official Codex issues, con
 - **Electron**: https://www.electronjs.org/
 - **Rust**: https://www.rust-lang.org/
 
-## Disclaimer (Again)
+## Support
 
-⚠️ **This project is UNOFFICIAL and NOT affiliated with OpenAI.**
+This is a community project with no official support.
+
+- **GitHub Issues**: Report bugs or ask questions
+- **GitHub Discussions**: General help and sharing
+- **Documentation**: See files listed in Documentation section
+- **OpenAI**: For official Codex issues, contact https://codex.openai.com/
+
+**Note**: OpenAI does not provide support for this project.
+
+---
+
+## Disclaimer
+
+**This project is UNOFFICIAL and NOT affiliated with OpenAI.**
 
 - No endorsement from OpenAI
 - No official support
@@ -392,6 +356,6 @@ By using this project, you agree to the terms in [LEGAL.md](LEGAL.md).
 
 ---
 
-**Made with ❤️ by the community**
+**Made by the community**
 
-Questions? See [LEGAL.md](LEGAL.md) or open an issue.
+Questions or issues? See [LEGAL.md](LEGAL.md) or open an issue on GitHub.

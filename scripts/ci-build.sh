@@ -31,10 +31,11 @@ fi
 echo "Target version: $VERSION"
 
 # Try multiple sources for Codex.app DMG
+# Official source: https://persistent.oaistatic.com/codex-app-prod/Codex.dmg
 SOURCES=(
+  "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg"
   "https://storage.googleapis.com/codex-releases/Codex-${VERSION}.dmg"
   "https://codex-releases.s3.amazonaws.com/Codex-${VERSION}.dmg"
-  "https://github.com/openai/codex/releases/download/v${VERSION}/Codex-${VERSION}.dmg"
 )
 
 DOWNLOADED=0

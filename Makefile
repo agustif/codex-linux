@@ -1,50 +1,61 @@
-.PHONY: all build clean dev shell release deb appimage tarball help ci-build
+.PHONY: all build quick full clean dev shell release deb appimage tarball help ci-build
 
 # Default target
-all: build
+all: quick
 
-# Build everything in Docker
+# Quick build (x86_64 + arm64, Ubuntu only) - for PRs/testing
+quick:
+	@echo "🚀 Quick build (x86_64 + arm64, Ubuntu only)"
+	@echo "Run: gh workflow run ci.yml --ref $$(git rev-parse --abbrev-ref HEAD) -f build_mode=quick"
+	@./scripts/ci-build.sh latest
+
+# Full build (all archs + distros) - for releases
+full:
+	@echo "🚀 Full build (all architectures + distributions)"
+	@echo "Run: gh workflow run ci.yml --ref $$(git rev-parse --abbrev-ref HEAD) -f build_mode=full"
+	@./scripts/ci-build.sh latest
+
+# Local Docker build (legacy, uses docker-compose)
 build:
-	@echo "Building Codex Linux Fork..."
-	docker-compose -f docker/docker-compose.yml build
-	docker-compose -f docker/docker-compose.yml run --rm build
+	@echo "Building with Docker Compose..."
+	docker-compose -f docker/docker-compose.yml build 2>/dev/null || docker build -f docker/Dockerfile -t codex-build .
+	docker run --rm -v $$(pwd):/build codex-build bash /build/docker/build.sh
 
 # Build only .deb package
 deb:
 	@echo "Building .deb package..."
-	docker-compose -f docker/docker-compose.yml run --rm build-deb
+	docker-compose -f docker/docker-compose.yml run --rm build-deb 2>/dev/null || echo "Use: make build"
 
 # Build only AppImage
 appimage:
 	@echo "Building AppImage..."
-	docker-compose -f docker/docker-compose.yml run --rm build-appimage
+	docker-compose -f docker/docker-compose.yml run --rm build-appimage 2>/dev/null || echo "Use: make build"
 
 # Build tarball
 tarball:
 	@echo "Building tarball..."
-	docker-compose -f docker/docker-compose.yml run --rm build /bin/bash -c "/build/build.sh && cd codex-linux-fork && npm run build:tarball && cp dist/*.tar.gz /output/"
-
-# Full release (all formats)
-release: build
-	@echo "Release complete. Check ./release/ directory"
+	cd codex-linux-fork && npm run build:tarball 2>/dev/null || echo "Use: make build"
 
 # CI build with Codex.app download
 ci-build:
 	@./scripts/ci-build.sh
 
+# Release (alias for full)
+release: full
+
 # Development shell
 shell:
-	docker-compose -f docker/docker-compose.yml run --rm dev
+	@echo "Opening shell in build container..."
+	docker run -it --rm -v $$(pwd):/build -w /build ubuntu:22.04 bash
 
-# Run directly (for testing)
+# Run locally (Electron wrapper)
 dev:
-	cd codex-linux-fork && npm start
+	cd codex-linux-fork && npm install && npm start
 
 # Clean build artifacts
 clean:
-	rm -rf release/*
-	rm -rf codex-linux-fork/dist
-	rm -rf codex-linux-fork/node_modules
+	@echo "Cleaning..."
+	rm -rf release/* codex-linux-fork/dist codex-linux-fork/node_modules target-cache
 	docker-compose -f docker/docker-compose.yml down -v 2>/dev/null || true
 
 # Prune Docker caches
@@ -55,20 +66,21 @@ prune: clean
 help:
 	@echo "Codex Linux Fork - Build System"
 	@echo ""
-	@echo "Targets:"
-	@echo "  make build     - Build all packages (.deb, AppImage, tarball)"
-	@echo "  make deb       - Build only .deb package"
-	@echo "  make appimage  - Build only AppImage"
-	@echo "  make tarball   - Build only tar.gz"
-	@echo "  make release   - Same as build"
-	@echo "  make ci-build  - CI build (downloads Codex.app, builds release)"
-	@echo "  make shell     - Open a shell in the build container"
-	@echo "  make dev       - Run locally (requires Linux)"
-	@echo "  make clean     - Remove build artifacts"
-	@echo "  make prune     - Clean + prune Docker caches"
+	@echo "🎯 Local Builds:"
+	@echo "  make quick      - Quick build locally (x86_64 + arm64)"
+	@echo "  make build      - Docker build (legacy)"
+	@echo "  make dev        - Run Electron wrapper"
 	@echo ""
-	@echo "Outputs are placed in ./release/"
+	@echo "📦 CI/CD Workflows:"
+	@echo "  make full       - Trigger full CI (all archs + distros)"
+	@echo "  make ci-build   - Manual CI build with Codex.app download"
 	@echo ""
-	@echo "CI/CD:"
-	@echo "  GitHub Actions workflow: .github/workflows/build-linux.yml"
-	@echo "  Automatically downloads Codex.app and builds on tag push"
+	@echo "🧹 Maintenance:"
+	@echo "  make clean      - Remove build artifacts"
+	@echo "  make prune      - Clean + prune Docker"
+	@echo "  make shell      - Interactive build shell"
+	@echo ""
+	@echo "📍 CI/CD:"
+	@echo "  Unified workflow: .github/workflows/ci.yml"
+	@echo "  Quick mode (PR): 2 archs × 1 distro"
+	@echo "  Full mode (tag): 3 archs × 3+ distros"

@@ -35,36 +35,40 @@ codex_app_reverse_engineer/
 
 ## Build Commands
 
-### Linux Fork (via Docker)
+### Primary Build Targets
 
 ```bash
-# Build all packages (.deb, AppImage, tarball)
+# Quick build (x86_64 + arm64, Ubuntu) - for PRs and testing
+make quick
+
+# Full build (all architectures + distributions) - for releases
+make full
+
+# Full CI build with Codex.app download
+make ci-build
+
+# Docker build (legacy)
 make build
 
-# Build specific targets
-make deb        # .deb package only
-make appimage   # AppImage only
-make tarball    # tar.gz only
+# Run Electron wrapper locally
+make dev
 
-# Development
-make dev        # Run locally (requires Linux)
-make shell      # Open shell in build container
-
-# Cleanup
+# Maintenance
 make clean      # Remove build artifacts
 make prune      # Clean + prune Docker caches
+make shell      # Interactive build shell
 ```
 
-### OSS Codex (Rust)
+### Codex Backend (Rust)
 
 ```bash
 cd codex-oss/codex-rs
 
-# Build CLI
-cargo build --release -p codex-tui
-
 # Build app server (used by Linux fork)
 cargo build --release -p codex-app-server
+
+# Build CLI
+cargo build --release -p codex-tui
 
 # Run tests
 cargo test                    # All tests
@@ -78,16 +82,25 @@ just test                     # Run tests with nextest
 just write-config-schema      # Regenerate config schema
 ```
 
-### OSS Codex (TypeScript/Node)
+### Electron Wrapper (Node.js)
 
 ```bash
-cd codex-oss
+cd codex-linux-fork
 
 # Install dependencies
-pnpm install
+npm install
 
-# Format
-pnpm format:fix               # Format all files
+# Build packages (.deb, AppImage, .tar.gz)
+npm run build:linux
+
+# Build specific format
+npm run build:deb
+npm run build:appimage
+npm run build:tarball
+
+# Development
+npm start                     # Run dev server
+npm run watch                 # Watch mode
 ```
 
 ## Architecture

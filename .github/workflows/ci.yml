@@ -1,0 +1,419 @@
+name: CI - Build & Release
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      codex_version:
+        description: 'Codex.app version (latest or X.Y.Z)'
+        required: false
+        default: 'latest'
+      build_mode:
+        description: 'Build mode (quick=x86_64+arm64, full=all archs+distros)'
+        required: false
+        default: 'quick'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  DOCKER_BUILDKIT: 1
+
+jobs:
+  # ============================================================================
+  # DETECT: Get versions, decide build strategy
+  # ============================================================================
+  detect:
+    name: Detect versions & build matrix
+    runs-on: ubuntu-latest
+    outputs:
+      repo_version: ${{ steps.version.outputs.repo }}
+      codex_version: ${{ steps.version.outputs.codex }}
+      is_release: ${{ steps.version.outputs.is_release }}
+      is_pr: ${{ github.event_name == 'pull_request' }}
+      build_mode: ${{ steps.mode.outputs.mode }}
+      matrix_json: ${{ steps.matrix.outputs.json }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect versions
+        id: version
+        run: |
+          # Repo version from git tag or fallback
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            REPO_VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            REPO_VERSION=$(git describe --tags --always 2>/dev/null | sed 's/^v//' || echo "0.1.0-dev")
+          fi
+          echo "repo=$REPO_VERSION" >> $GITHUB_OUTPUT
+
+          # Codex version
+          CODEX_VERSION="${{ github.event.inputs.codex_version }}"
+          if [ "$CODEX_VERSION" = "latest" ] || [ -z "$CODEX_VERSION" ]; then
+            CODEX_VERSION=$(curl -s https://api.github.com/repos/openai/codex/releases/latest \
+              | jq -r '.tag_name' | sed 's/^v//' || echo "0.1.0")
+          fi
+          echo "codex=$CODEX_VERSION" >> $GITHUB_OUTPUT
+          echo "is_release=$([[ '$GITHUB_REF' == refs/tags/* ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+
+          echo "📌 Repo: v$REPO_VERSION | Codex: v$CODEX_VERSION"
+
+      - name: Determine build mode
+        id: mode
+        run: |
+          MODE="${{ github.event.inputs.build_mode }}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            MODE="quick"
+          elif [ -z "$MODE" ]; then
+            MODE="full"
+          fi
+          echo "mode=$MODE" >> $GITHUB_OUTPUT
+          echo "🏗️ Build mode: $MODE"
+
+      - name: Generate build matrix
+        id: matrix
+        run: |
+          if [ "${{ steps.mode.outputs.mode }}" = "quick" ]; then
+            # PR/dev builds: x86_64 + arm64, Ubuntu only
+            MATRIX='{
+              "include": [
+                {"arch": "x86_64", "docker_arch": "amd64", "distro": "ubuntu-22.04", "base": "ubuntu:22.04"},
+                {"arch": "arm64", "docker_arch": "arm64", "distro": "ubuntu-22.04", "base": "ubuntu:22.04"}
+              ]
+            }'
+          else
+            # Full release: all archs + distros
+            MATRIX='{
+              "include": [
+                {"arch": "x86_64", "docker_arch": "amd64", "distro": "ubuntu-22.04", "base": "ubuntu:22.04"},
+                {"arch": "arm64", "docker_arch": "arm64", "distro": "ubuntu-22.04", "base": "ubuntu:22.04"},
+                {"arch": "armv7l", "docker_arch": "arm/v7", "distro": "ubuntu-22.04", "base": "ubuntu:22.04"},
+                {"arch": "x86_64", "docker_arch": "amd64", "distro": "debian-11", "base": "debian:11-slim"},
+                {"arch": "arm64", "docker_arch": "arm64", "distro": "debian-11", "base": "debian:11-slim"},
+                {"arch": "x86_64", "docker_arch": "amd64", "distro": "fedora-38", "base": "fedora:38"},
+                {"arch": "arm64", "docker_arch": "arm64", "distro": "fedora-38", "base": "fedora:38"},
+                {"arch": "x86_64", "docker_arch": "amd64", "distro": "alpine-latest", "base": "alpine:latest"},
+                {"arch": "arm64", "docker_arch": "arm64", "distro": "alpine-latest", "base": "alpine:latest"}
+              ]
+            }'
+          fi
+          echo "json=$MATRIX" >> $GITHUB_OUTPUT
+
+  # ============================================================================
+  # BUILD: Multi-arch, multi-distro builds
+  # ============================================================================
+  build:
+    name: Build ${{ matrix.distro }} / ${{ matrix.arch }}
+    needs: detect
+    runs-on: ubuntu-latest
+    if: ${{ !needs.detect.outputs.is_pr || github.event_name != 'pull_request' || github.repository == github.event.pull_request.head.repo.full_name }}
+    
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.detect.outputs.matrix_json) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout codex-oss (OSS backend)
+        run: |
+          if [ ! -d codex-oss/.git ]; then
+            git clone --depth 1 https://github.com/openai/codex.git codex-oss
+          else
+            cd codex-oss
+            git fetch origin --depth 1
+            cd -
+          fi
+
+      - name: Download Codex.app
+        id: download
+        run: |
+          DMG_FILE="Codex.dmg"
+          
+          echo "Downloading Codex.app for extraction..."
+          
+          # Official Codex.app download source
+          for URL in \
+            "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg" \
+            "https://storage.googleapis.com/codex-releases/Codex.dmg"; do
+            if curl -L -f --progress-bar "$URL" -o "${DMG_FILE}" 2>/dev/null; then
+              echo "Downloaded: $(du -h ${DMG_FILE} | cut -f1)"
+              echo "downloaded=true" >> $GITHUB_OUTPUT
+              break
+            fi
+          done
+          
+          if [ ! -f "${DMG_FILE}" ]; then
+            echo "Warning: Codex.app download failed, will use cached/existing app/"
+            echo "downloaded=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Extract Codex.app
+        if: steps.download.outputs.downloaded == 'true'
+        run: |
+          sudo apt-get update && sudo apt-get install -y 7zip-full xar
+          mkdir -p extracted app
+          
+          # Try extraction
+          7z x Codex-*.dmg -oextracted/ > /dev/null 2>&1 || \
+            xar -x -f Codex-*.dmg -C extracted/
+          
+          # Copy extracted content to app/
+          find extracted -type f \( -name "*.asar" -o -name "*.png" -o -name "*.svg" -o -name "*.node" \) \
+            | while read -r f; do
+              dir=$(dirname "$f" | sed "s|extracted|app|")
+              mkdir -p "$dir"
+              cp "$f" "$dir/" 2>/dev/null || true
+            done
+          
+          echo "✓ Extraction complete"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build for ${{ matrix.distro }} / ${{ matrix.arch }}
+        run: |
+          ARCH="${{ matrix.arch }}"
+          DISTRO="${{ matrix.distro }}"
+          BASE_IMAGE="${{ matrix.base }}"
+          DOCKER_ARCH="${{ matrix.docker_arch }}"
+          CODEX_VERSION="${{ needs.detect.outputs.codex_version }}"
+          
+          echo "🔨 Building for $DISTRO/$ARCH..."
+          
+          # Create build script
+          cat > /tmp/build.sh << 'SCRIPT_EOF'
+          #!/bin/bash
+          set -ex
+          
+          ARCH=$1
+          DISTRO=$2
+          
+          # Install deps based on distro
+          case "$DISTRO" in
+            ubuntu-22.04|debian-11)
+              apt-get update
+              apt-get install -y build-essential curl wget git pkg-config \
+                libssl-dev libcap-dev ca-certificates libsecret-1-dev \
+                libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils \
+                libatspi2.0-0 libuuid1 libappindicator3-1 libasound2 libfuse2 \
+                file 7zip-full xar python3
+              ;;
+            fedora-38)
+              dnf install -y gcc g++ make curl wget git openssl-devel \
+                libsecret-devel gtk3 libnotify nss libxss libxtst xdg-utils \
+                at-spi2-core file p7zip xar python3
+              ;;
+            alpine-latest)
+              apk add --no-cache build-base curl wget git openssl-dev \
+                libsecret-dev gtk+3.0 libnotify nss xdg-utils file \
+                python3 bash
+              ;;
+          esac
+          
+          # Install Node
+          curl -fsSL https://deb.nodesource.com/setup_20.x | bash - 2>/dev/null || true
+          case "$DISTRO" in
+            ubuntu-*|debian-*) apt-get install -y nodejs ;;
+            fedora-*) dnf install -y nodejs ;;
+            alpine-*) apk add --no-cache nodejs npm ;;
+          esac
+          
+          # Install Rust
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          export PATH="$HOME/.cargo/bin:$PATH"
+          
+          cd /build
+          
+          # [1/5] Build Rust backend
+          echo "[1/5] Building Rust binary for $ARCH..."
+          cd codex-oss/codex-rs
+          cargo build --release -p codex-app-server 2>&1 | tail -20
+          cd -
+          mkdir -p codex-linux-fork/bin
+          cp codex-oss/codex-rs/target/release/codex-app-server codex-linux-fork/bin/codex
+          chmod +x codex-linux-fork/bin/codex
+          echo "✓ Binary: $(du -h codex-linux-fork/bin/codex | cut -f1)"
+          
+          # [2/5] Download ripgrep
+          echo "[2/5] Downloading ripgrep..."
+          case "$ARCH" in
+            x86_64) RG_URL="https://github.com/BurntSushi/ripgrep/releases/download/14.1.0/ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz" ;;
+            arm64|aarch64) RG_URL="https://github.com/BurntSushi/ripgrep/releases/download/14.1.0/ripgrep-14.1.0-aarch64-unknown-linux-gnu.tar.gz" ;;
+            armv7l) RG_URL="https://github.com/BurntSushi/ripgrep/releases/download/14.1.0/ripgrep-14.1.0-armv7-unknown-linux-gnueabihf.tar.gz" ;;
+          esac
+          curl -sL "$RG_URL" | tar xz -C codex-linux-fork/resources --strip-components=1 2>/dev/null && \
+            chmod +x codex-linux-fork/resources/rg || echo "ripgrep skipped"
+          echo "✓ ripgrep ready"
+          
+          # [3/5] Install dependencies
+          echo "[3/5] Installing Node dependencies..."
+          cd codex-linux-fork
+          npm install --production 2>&1 | tail -10
+          echo "✓ Dependencies installed"
+          
+          # [4/5] Build packages
+          echo "[4/5] Building packages..."
+          npm run build:linux 2>&1 | tail -20
+          echo "✓ Packages built"
+          
+          # [5/5] Checksums
+          echo "[5/5] Creating checksums..."
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+          
+          echo "✓ Build complete!"
+          SCRIPT_EOF
+          
+          chmod +x /tmp/build.sh
+          
+          # Run Docker build
+          docker run --rm \
+            --platform "linux/$DOCKER_ARCH" \
+            --volume "$(pwd):/build" \
+            --volume "/tmp/build.sh:/build.sh:ro" \
+            -e "CARGO_TARGET_DIR=/build/target-cache" \
+            --workdir /build \
+            "$BASE_IMAGE" \
+            bash /build.sh "$ARCH" "$DISTRO"
+
+      - name: Collect artifacts
+        if: always()
+        run: |
+          ARCH="${{ matrix.arch }}"
+          DISTRO="${{ matrix.distro }}"
+          mkdir -p "artifacts-${DISTRO}-${ARCH}"
+          
+          # Copy packages
+          if [ -d codex-linux-fork/dist ]; then
+            cp codex-linux-fork/dist/* "artifacts-${DISTRO}-${ARCH}/" 2>/dev/null || true
+          fi
+          
+          # Copy binary
+          if [ -f codex-linux-fork/bin/codex ]; then
+            cp codex-linux-fork/bin/codex "artifacts-${DISTRO}-${ARCH}/codex-${ARCH}"
+          fi
+          
+          # Metadata
+          cat > "artifacts-${DISTRO}-${ARCH}/BUILD_INFO.txt" << EOF
+          Distribution: $DISTRO
+          Architecture: $ARCH
+          Build Date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          Repo Version: ${{ needs.detect.outputs.repo_version }}
+          Codex Version: ${{ needs.detect.outputs.codex_version }}
+          EOF
+          
+          ls -lh "artifacts-${DISTRO}-${ARCH}/" || echo "No artifacts"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: artifacts-${{ matrix.distro }}-${{ matrix.arch }}
+          path: artifacts-${{ matrix.distro }}-${{ matrix.arch }}/
+          retention-days: 30
+
+  # ============================================================================
+  # RELEASE: Organize artifacts and create GitHub release
+  # ============================================================================
+  release:
+    name: Organize & release
+    needs: [detect, build]
+    runs-on: ubuntu-latest
+    if: always() && needs.detect.outputs.is_release == 'true'
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts/
+
+      - name: Organize release assets
+        run: |
+          mkdir -p release-assets
+          
+          # Flatten artifact structure
+          find all-artifacts -type f ! -name ".gitkeep" | while read -r f; do
+            filename=$(basename "$f")
+            cp "$f" "release-assets/$filename" 2>/dev/null || true
+          done
+          
+          # Create comprehensive checksums
+          cd release-assets
+          find . -type f ! -name "SHA256SUMS*" -exec sha256sum {} \; | sort > SHA256SUMS
+          
+          # Create manifest
+          cat > MANIFEST.md << 'MANIFEST_EOF'
+          # Codex Linux Release
+          
+          **Version**: ${{ needs.detect.outputs.repo_version }}
+          **Codex Version**: ${{ needs.detect.outputs.codex_version }}
+          **Build Date**: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          
+          ## Available Packages
+          
+          MANIFEST_EOF
+          
+          ls -lh | grep -E "\.deb|\.rpm|AppImage|\.tar\.gz|codex-" | \
+            awk '{print "- " $9 " (" $5 ")"}' >> MANIFEST.md
+          
+          echo "✓ Release assets organized:"
+          ls -lh | tail -20
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release-assets/**/*
+          body_path: release-assets/MANIFEST.md
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+
+      - name: Publish artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ needs.detect.outputs.repo_version }}
+          path: release-assets/
+          retention-days: 90
+
+  # ============================================================================
+  # SUMMARY: Print build summary
+  # ============================================================================
+  summary:
+    name: Build summary
+    needs: [detect, build]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Print summary
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          # 🚀 Build Summary
+          
+          - **Repo Version**: ${{ needs.detect.outputs.repo_version }}
+          - **Codex Version**: ${{ needs.detect.outputs.codex_version }}
+          - **Build Mode**: ${{ needs.detect.outputs.build_mode }}
+          - **Is Release**: ${{ needs.detect.outputs.is_release }}
+          
+          ## Build Matrix
+          
+          ${{ needs.detect.outputs.matrix_json }}
+          
+          [View workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF

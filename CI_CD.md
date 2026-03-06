@@ -1,154 +1,285 @@
-# Codex Linux Fork - CI/CD Architecture
+# CI/CD Architecture
 
-This project uses a clean, zero-vendor approach where Codex.app is downloaded at build time from official OpenAI sources. The repository contains only open-source code and build scripts.
+## Overview
 
-## Architecture
+This project implements a unified, efficient CI/CD pipeline that consolidates building across multiple architectures and distributions into a single workflow.
+
+The pipeline follows a "zero vendor" approach where Codex.app is downloaded from official OpenAI sources at build time, ensuring the repository contains only source code and build scripts.
+
+## Workflow Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ GitHub Actions Workflow (.github/workflows/build-linux.yml) │
-├─────────────────────────────────────────────────────────┤
-│ 1. Download Codex.app DMG from OpenAI                   │
-│ 2. Extract webview, assets, and app.asar                │
-│ 3. Run Docker build (Makefile → build.sh)               │
-│ 4. Build Rust binary (codex-app-server)                 │
-│ 5. Build Electron wrapper (codex-linux-fork)            │
-│ 6. Create artifacts (.deb, AppImage, .tar.gz)           │
-│ 7. Upload to GitHub Releases                            │
-└─────────────────────────────────────────────────────────┘
+GitHub Actions (ci.yml)
+  |
+  +-- detect job
+  |   +-- Determine repo version (from git tag or commit)
+  |   +-- Detect Codex.app version (from GitHub API or input)
+  |   +-- Generate build matrix (quick or full)
+  |
+  +-- build job (matrix)
+  |   +-- Checkout repository and codex-oss
+  |   +-- Download Codex.app DMG from OpenAI
+  |   +-- Extract webview and assets
+  |   +-- Docker build for target architecture/distro
+  |   +-- Build Rust backend (codex-app-server)
+  |   +-- Build packages (.deb, .rpm, AppImage, .tar.gz)
+  |   +-- Create SHA256 checksums
+  |   +-- Upload artifacts
+  |
+  +-- release job (on tag)
+  |   +-- Download all build artifacts
+  |   +-- Organize by distribution and architecture
+  |   +-- Create comprehensive manifest
+  |   +-- Create GitHub Release with downloads
+  |   +-- Publish release artifacts (90 day retention)
+  |
+  +-- summary job
+      +-- Print build summary to step summary
 ```
+
+## Build Modes
+
+### Quick Mode
+
+**Triggers**: Pull requests, manual dispatch with `build_mode=quick`
+
+**Matrix**: 2 architectures × 1 distribution
+- x86_64 on Ubuntu 22.04
+- arm64 on Ubuntu 22.04
+
+**Duration**: ~15-20 minutes
+
+**Purpose**: Fast feedback for PRs and development
+
+### Full Mode
+
+**Triggers**: Tag push (v*), manual dispatch with `build_mode=full`
+
+**Matrix**: 3 architectures × 4 distributions
+- x86_64, arm64, armv7
+- Ubuntu 22.04, Debian 11, Fedora 38, Alpine latest
+
+**Duration**: ~60-90 minutes (depending on cache state)
+
+**Purpose**: Complete release with all packages and architectures
+
+## Workflow File
+
+**Location**: `.github/workflows/ci.yml`
+
+**Key Components**:
+
+1. **detect job**: Version detection and matrix generation
+2. **build job**: Multi-platform Docker builds
+3. **release job**: Artifact organization and GitHub Release creation
+4. **summary job**: Workflow summary and reporting
 
 ## Building Locally
 
 ### Quick Build
+
 ```bash
-make build
+make quick
 ```
 
-This assumes `app/` directory exists with extracted Codex.app contents.
+Runs `./scripts/ci-build.sh latest` which:
+1. Downloads latest Codex.app
+2. Extracts webview and assets
+3. Builds for x86_64 and arm64 on Ubuntu
+4. Places artifacts in `./release/`
 
-### Full CI-style Build (Download + Build)
+### Full Build
+
 ```bash
-make ci-build
+make full
 ```
 
-This downloads the latest Codex.app and builds everything.
+Triggers GitHub Actions workflow with `build_mode=full`.
 
-### Manual Download (for specific version)
+Alternatively, use the CLI:
 ```bash
-# Download and build
-./scripts/ci-build.sh 0.1.2
-
-# Or use Makefile
-make ci-build
+gh workflow run ci.yml --ref main -f build_mode=full
 ```
 
-## GitHub Actions Workflow
+### Manual CI Build
 
-### Trigger Events
+```bash
+./scripts/ci-build.sh [VERSION]
+```
 
-1. **On Tag Push** (Recommended)
-   ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
-   ```
-   → Automatically builds and creates a GitHub Release
-
-2. **On Push to Main**
-   → Builds and uploads artifacts for 30 days
-
-3. **Manual Dispatch** (Workflow UI)
-   → Specify custom Codex.app version or use latest
-
-### Workflow File
-
-**Location**: `.github/workflows/build-linux.yml`
-
-**Key Steps**:
-1. Checkout repository with submodules
-2. Download Codex.app from OpenAI sources
-3. Extract webview, assets, and app.asar
-4. Run Docker build with `make build`
-5. Create and sign artifacts
-6. Upload to GitHub Releases (if tagged)
-
-### Artifacts
-
-After a successful build, GitHub Actions uploads:
-- `Codex-0.1.0-arm64.AppImage` (142 MB)
-- `codex-linux_0.1.0_arm64.deb` (108 MB)
-- `codex-linux-0.1.0-arm64.tar.gz` (139 MB)
-- `codex-linux-x64` (Rust binary, 53 MB)
-- `SHA256SUMS` (checksums)
+Where VERSION is a Codex.app version or "latest".
 
 ## Codex.app Download Strategy
 
-The workflow tries these sources in order:
+The workflow attempts to download Codex.app from official sources in order:
 
-1. `https://storage.googleapis.com/codex-releases/Codex-{VERSION}.dmg`
-2. `https://codex-releases.s3.amazonaws.com/Codex-{VERSION}.dmg`
-3. `https://github.com/openai/codex/releases/download/v{VERSION}/Codex-{VERSION}.dmg`
+1. `https://persistent.oaistatic.com/codex-app-prod/Codex.dmg` (Official)
+2. `https://storage.googleapis.com/codex-releases/Codex.dmg` (Fallback)
 
-If all fail, the workflow provides manual download instructions.
+**Note**: Codex.app is proprietary and requires signing into ChatGPT at runtime. The DMG download provides the pre-compiled binary and webview assets extracted at build time.
+
+If all sources fail, the workflow will use any cached/existing `app/` directory in the repository.
 
 ## Repository Structure
 
 ```
 codex_app_reverse_engineer/
-├── .github/workflows/build-linux.yml    # CI/CD pipeline
-├── scripts/ci-build.sh                  # CI build orchestration
-├── Makefile                             # Build targets
-├── docker/                              # Docker build environment
-├── codex-oss/                           # Open-source codex-rs
-├── codex-linux-fork/                    # Electron wrapper
-├── app/                                 # (Generated) Extracted Codex.app
-└── release/                             # (Generated) Build artifacts
+├── .github/
+│   └── workflows/
+│       └── ci.yml                      # Unified CI/CD pipeline
+├── scripts/
+│   ├── ci-build.sh                     # CI orchestration script
+│   └── build-distro-matrix.json        # Build configuration
+├── docker/
+│   ├── Dockerfile                      # Docker build environment
+│   ├── docker-compose.yml              # Container orchestration
+│   └── build.sh                        # Build script (Docker)
+├── codex-oss/                          # Open-source backend (git repo)
+│   └── codex-rs/
+│       └── codex-app-server/           # Rust binary source
+├── codex-linux-fork/                   # Electron wrapper
+│   ├── package.json                    # Node dependencies
+│   ├── main.js                         # Electron main process
+│   ├── bin/                            # Compiled binaries
+│   ├── resources/                      # Icons, ripgrep
+│   └── webview/                        # Extracted UI assets
+├── app/                                # (Generated) Extracted Codex.app
+├── release/                            # (Generated) Build artifacts
+├── Makefile                            # Build targets
+├── README.md                           # User documentation
+├── CI_CD.md                            # This file
+├── BUILD_MATRIX.md                     # Architecture/distro details
+├── DISTRO_SUPPORT.md                   # Per-distro installation
+└── LEGAL.md                            # Legal disclaimer
 ```
 
 ## What's NOT in the Repository
 
-- ❌ Codex.app binary (0.5+ GB)
-- ❌ Extracted webview assets (large)
-- ❌ Build artifacts (Linux packages)
-- ❌ node_modules, target/, dist/
+- Codex.app binary (downloaded at build time)
+- Extracted webview assets (generated at build)
+- Build artifacts (Linux packages)
+- node_modules, target/, dist/ directories
+- .DS_Store, temporary files
 
-These are generated at build time or download time.
-
-## Security & Licensing
-
-### Repository License
-- Build scripts and Linux fork: **MIT License**
-- Codex-rs (OSS): **Apache-2.0 License**
-
-### Binary Components
-- **Codex.app**: Downloaded from official OpenAI sources at build time
-  - License: See Codex.app EULA
-  - Not included in repository
-  - Used only for webview and assets extraction
-
-This keeps the repository clean and ensures compliance with:
-- ✅ Codex.app license (no redistribution)
-- ✅ Codex-rs open-source license
-- ✅ Build script IP rights
+This keeps the repository at ~50MB instead of 0.5GB+.
 
 ## Environment Variables
 
-For local builds:
+For local builds, the following variables can be configured:
 
 ```bash
-# Use specific Codex version
+# Codex.app version (default: auto-detect latest)
 export CODEX_VERSION="0.1.2"
 
-# Override download source
-export CODEX_DMG_URL="https://custom.example.com/Codex.dmg"
+# Override download URL (for internal/cached builds)
+export CODEX_DMG_URL="https://internal.example.com/Codex.dmg"
 
 # Docker build flags
 export DOCKER_BUILDKIT=1
+
+# Cargo cache location
+export CARGO_TARGET_DIR="/build/target-cache"
 ```
 
-## Continuous Integration Best Practices
+## Performance Optimization
 
-### 1. Version Management
+### Build Time Reduction
+
+1. **Cargo caching**: Reuses compiled dependencies across builds
+2. **Docker layer caching**: Reuses base image layers
+3. **Parallel jobs**: Builds multiple architectures concurrently
+4. **Minimal dependencies**: Only production dependencies in final packages
+
+### Disk Space
+
+Typical requirements:
+- Repository clone: ~200MB
+- Docker build: ~20GB per architecture
+- Build artifacts: ~400MB (all packages)
+
+**Minimum**: 50GB free space recommended
+
+## Security Considerations
+
+### No Proprietary Code in Repository
+
+- Codex.app is downloaded from official OpenAI sources only
+- No redistribution of proprietary components
+- Build scripts and infrastructure are open source (MIT)
+
+### Artifact Verification
+
+All released artifacts include SHA256 checksums. Verify before use:
+
+```bash
+sha256sum -c SHA256SUMS
+```
+
+### Dependency Management
+
+- Codex backend: Pulled fresh from github.com/openai/codex on each build
+- Node modules: Installed from npm registry with package-lock.json
+- Build environment: Fresh Docker images on each build
+
+## Troubleshooting
+
+### Workflow Failures
+
+1. **Codex.app download fails**
+   - Check internet connectivity
+   - Verify OpenAI's release servers are accessible
+   - Try manual download and `make build`
+
+2. **Docker build fails**
+   - Verify Docker daemon is running
+   - Check disk space (50GB minimum)
+   - Review Docker build logs in GitHub Actions
+
+3. **Artifact upload fails**
+   - Check GitHub Actions permissions
+   - Verify artifact retention settings
+   - Ensure release has write permissions
+
+### Performance Issues
+
+1. **Build takes too long**
+   - First build is slower (compiles Rust)
+   - Subsequent builds use cache
+   - Check Docker resource limits
+
+2. **Out of disk space**
+   - Run `make clean` to remove build artifacts
+   - Run `make prune` to clean Docker
+   - Increase available disk space
+
+## Version Management
+
+### Repository Version
+
+Determined from:
+1. Git tag if pushed (v0.1.0)
+2. `git describe --tags` fallback
+3. Default "0.1.0-dev" if no tags
+
+### Codex Version
+
+Determined from:
+1. GitHub workflow input (manual dispatch)
+2. Auto-detect latest from github.com/openai/codex
+3. Environment variable CODEX_VERSION
+
+### Release Metadata
+
+Each release includes:
+- Version numbers
+- Build date (UTC)
+- Build matrix details
+- Architecture and distribution info
+- SHA256 checksums
+
+## CI/CD Best Practices
+
+### 1. Semantic Versioning
 
 Tag releases semantically:
 ```bash
@@ -156,83 +287,85 @@ git tag -a v0.1.0 -m "Release v0.1.0 - Linux fork"
 git push origin v0.1.0
 ```
 
-### 2. Monitoring Builds
+### 2. Pre-release Testing
+
+Test on PRs before releasing:
+```bash
+# PR triggers quick build automatically
+# Verify artifacts in GitHub Actions
+```
+
+### 3. Monitoring
 
 Check workflow status:
 ```bash
-gh workflow view build-linux.yml
-gh run list --workflow build-linux.yml
+gh workflow list
+gh run list --workflow ci.yml
 ```
 
-### 3. Troubleshooting Failed Builds
-
-1. Check workflow logs on GitHub Actions
-2. Run locally with `make ci-build` to reproduce
-3. Check Codex.app version availability
-4. Verify Docker daemon is running
+View detailed logs:
+```bash
+gh run view <RUN_ID> --log
+```
 
 ### 4. Release Notes
 
-The workflow auto-generates release notes with:
-- Download links for all formats
-- Installation instructions
+Generated automatically from:
+- Git tags and commit messages
 - Build metadata
-- SHA256 checksums
+- Artifact checksums
 
 ## Customization
 
-### Custom Build Targets
-
-Edit `.github/workflows/build-linux.yml` to:
-- Build for additional architectures (x86_64, etc.)
-- Push to additional registries (Docker Hub, Artifact Hub)
-- Run additional tests before release
-
 ### Custom Codex.app Source
 
-For private/internal Codex builds:
+For private/internal Codex builds, modify `.github/workflows/ci.yml`:
 
 ```yaml
-# In .github/workflows/build-linux.yml
 - name: Download Codex.app
   run: |
     curl -H "Authorization: Bearer ${{ secrets.CODEX_DOWNLOAD_TOKEN }}" \
       -o Codex.dmg \
-      https://private.example.com/codex-releases/latest.dmg
+      https://private.example.com/codex/latest.dmg
 ```
 
-## Performance
+### Additional Distributions
 
-### Build Times
-- **Rust compilation**: ~12 minutes (first build, cached after)
-- **Electron packaging**: ~3 minutes
-- **Total**: ~20 minutes (depends on network)
+To add a new distribution, modify the matrix in `ci.yml`:
 
-### Optimization Tips
-- Use GitHub Actions runners with sufficient CPU/RAM
-- Cache Docker layers between builds
-- Pre-download Codex.app if possible
+```yaml
+{"arch": "x86_64", "docker_arch": "amd64", "distro": "ubuntu-24.04", "base": "ubuntu:24.04"}
+```
 
-## FAQs
+### Docker Registry Publishing
 
-**Q: Why download Codex.app instead of including it?**
-- A: Reduces repo size from 0.5+ GB to ~50 MB
-- Keeps repository compliance clean
-- Ensures latest Codex.app is always used
+To publish Docker images after build, add step in `release` job:
 
-**Q: Can I build offline?**
-- A: Yes, if you have an extracted `app/` directory and all dependencies
-- Run `make build` to skip Codex.app download
+```yaml
+- name: Build and push Docker images
+  run: |
+    docker build -t ${{ secrets.DOCKER_REGISTRY }}/codex:$VERSION .
+    docker push ${{ secrets.DOCKER_REGISTRY }}/codex:$VERSION
+```
 
-**Q: How do I test builds locally before pushing?**
-- A: Use `make ci-build` to run the full CI pipeline locally
+## Maintenance
 
-**Q: Can I use pre-built Codex binaries?**
-- A: Yes, extract them to `app/` and run `make build`
-- See CODEX_REVERSE_ENGINEERING.md for extraction steps
+### Regular Tasks
+
+- Monitor GitHub Actions for build failures
+- Update Codex backend version when new releases available
+- Review and update dependencies quarterly
+- Test on new Linux distributions annually
+
+### Archive Policy
+
+- Release artifacts: 90 days retention
+- PR artifacts: 30 days retention
+- Automatic cleanup via GitHub Actions
 
 ## Related Documentation
 
-- [Build System](README.md) - How the build process works
-- [Reverse Engineering Guide](CODEX_REVERSE_ENGINEERING.md) - Detailed technical info
-- [Docker Build Environment](docker/README.md) - Container build details
+- [README.md](README.md) - Project overview and quick start
+- [BUILD_MATRIX.md](BUILD_MATRIX.md) - Architecture and distribution details
+- [DISTRO_SUPPORT.md](DISTRO_SUPPORT.md) - Per-distribution installation guides
+- [LEGAL.md](LEGAL.md) - Legal disclaimer and licensing
