@@ -1,13 +1,16 @@
 # Codex Linux Fork
 
-A community-maintained Linux fork of OpenAI's Codex desktop application, built from the open-source components.
+A community-maintained Linux fork of OpenAI's Codex desktop application.
 
 ## What This Is
 
 This fork combines:
-- **Electron UI**: Extracted from the macOS Codex.app (cross-platform JavaScript)
-- **Rust Backend**: Built from the open-source [openai/codex](https://github.com/openai/codex) repository
+- **Electron shell**: The extracted desktop shell from the macOS Codex.app
+- **Rust Backend**: Built from the open-source [openai/codex](https://github.com/openai/codex) repository, with a small Linux launcher shim
 - **Native Modules**: Rebuilt for Linux (node-pty, better-sqlite3)
+
+Current validated target:
+- Ubuntu ARM64, with both `AppImage` and installed `.deb` launch confirmed under `xvfb`
 
 ## Prerequisites
 
@@ -19,30 +22,24 @@ This fork combines:
 ## Quick Start
 
 ```bash
-# Clone or copy this fork
+# From the repository root
+bash scripts/prepare-linux-fork.sh
 cd codex-linux-fork
-
-# Make build script executable
-chmod +x build.sh
-
-# Run the build script
 ./build.sh
-
-# Start the app
-npm start
 ```
 
 ## Build from Source
 
-### 1. Build the Rust Binary
+### 1. Build the Rust Backend Binary
 
 ```bash
 # From the OSS repository
 cd codex-oss/codex-rs
 cargo build --release -p codex-app-server
 
-# Copy to fork
-cp target/release/codex-app-server ../../codex-linux-fork/bin/codex
+# The Linux build helpers package this as:
+# - resources/codex-app-server  (real backend)
+# - resources/codex             (launcher shim expected by the desktop shell)
 ```
 
 ### 2. Install Dependencies
@@ -60,10 +57,12 @@ npm run rebuild  # Rebuild native modules for Linux
 npm run build:linux
 
 # Or specific formats
-npm run build:deb        # .deb package
+npm run build:deb        # native dpkg-deb package
 npm run build:appimage   # AppImage (portable)
 npm run build:tarball    # tar.gz archive
 ```
+
+`npm run build:deb` uses `../scripts/build-linux-deb.sh`, not `electron-builder`'s Debian target. That avoids the broken bundled `fpm` path on ARM64.
 
 ## Custom API Endpoints
 
@@ -89,32 +88,19 @@ export CUSTOM_API_KEY="your-key-here"
 
 ```
 codex-linux-fork/
-├── main.js              # Electron main process
-├── preload.js           # Context bridge for IPC
-├── webview/             # React UI (from app.asar)
-├── bin/codex            # Rust backend (from OSS)
+├── .vite/build/         # Extracted Electron main/preload/worker bundle
+├── webview/             # Extracted renderer bundle
+├── bin/codex-app-server # Rust backend (from OSS)
+├── resources/codex      # Launcher shim expected by the desktop shell
 ├── resources/rg         # ripgrep for file search
-└── package.json         # Dependencies & build config
+└── package.json         # Linux packaging metadata
 ```
-
-## JSON-RPC Protocol
-
-The UI communicates with the Rust backend via JSON-RPC over WebSocket. Key methods:
-
-- `initialize` - Start session
-- `thread/start` - Create conversation thread
-- `turn/start` - Send message to AI
-- `turn/interrupt` - Cancel current operation
-- `model/list` - List available models
-- `config/read` - Read configuration
-
-Protocol source: `codex-oss/codex-rs/app-server-protocol/`
 
 ## Limitations
 
 - No auto-update (Sparkle is macOS-only)
-- Some macOS-specific features removed
-- First-run requires accepting permissions
+- x86_64 package validation still needs a dedicated host pass
+- Offline guests may log a non-fatal recommended-skills fetch failure on first launch
 
 ## License
 

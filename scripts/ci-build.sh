@@ -7,6 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 VERSION="${1:-latest}"
+PREPARE_SCRIPT="$REPO_ROOT/scripts/prepare-linux-fork.sh"
 
 echo "=========================================="
 echo "  Codex Linux CI Build"
@@ -107,6 +108,8 @@ echo ""
 echo "[3/3] Building Linux release..."
 cd "$REPO_ROOT"
 
+bash "$PREPARE_SCRIPT"
+
 # Clean previous builds
 make clean
 
@@ -120,13 +123,13 @@ echo "  Build Complete!"
 echo "=========================================="
 
 RELEASE_DIR="$REPO_ROOT/release"
-if [ -d "$RELEASE_DIR" ] && [ "$(find "$RELEASE_DIR" -maxdepth 1 -type f | wc -l)" -gt 0 ]; then
+if find "$RELEASE_DIR" -maxdepth 1 -type f \( -name "*.deb" -o -name "*.AppImage" -o -name "*.tar.gz" \) | grep -q .; then
   echo ""
   echo "Artifacts:"
   for f in "$RELEASE_DIR"/*; do
     if [ -f "$f" ]; then
       case "$(basename "$f")" in
-        *AppImage*|*.deb|*.tar.gz|*arm64*)
+        *AppImage*|*.deb|*.tar.gz)
           ls -lh "$f"
           ;;
       esac

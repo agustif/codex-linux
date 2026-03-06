@@ -10,70 +10,45 @@ See [LEGAL.md](LEGAL.md) for complete disclaimer and licensing information.
 
 ## Overview
 
-This project provides a complete Linux build system for Codex, the AI code assistant from OpenAI.
+This project packages the real extracted Codex desktop shell for Linux and pairs it with the open-source `codex-app-server`.
 
 It consists of:
 
 1. **Codex Backend (Rust)**
    - Open-source: [github.com/openai/codex](https://github.com/openai/codex)
-   - Compiled from source for Linux
-   - Provides API and WebSocket server
+   - Compiled from source for Linux as `codex-app-server`
+   - Invoked through the launcher contract expected by the extracted shell
 
 2. **Codex UI (Electron)**
    - Extracted from Codex.app macOS binary
-   - Rebuilt as native Linux Electron application
-   - Communicates with backend via JSON-RPC
+   - Repackaged as a native Linux Electron application
+   - Communicates with the backend over the app-server stdio transport
 
 3. **Build Infrastructure**
    - Docker-based reproducible builds
-   - GitHub Actions CI/CD pipeline
-   - Multi-distribution support (Ubuntu, Debian, Fedora, Alpine)
-   - Multi-architecture support (x86_64, ARM64, ARMv7)
+   - GitHub Actions packaging pipeline for x86_64 and ARM64
+   - Native ARM64 Debian packaging with `dpkg-deb`
+   - Real-VM validation on Ubuntu ARM64 via OrbStack
 
 ## Features
 
-- **Multiple Linux Distributions**: Ubuntu 22.04, Debian 11, Fedora 38, Alpine
-- **Multiple Architectures**: x86_64, ARM64 (Raspberry Pi 4+), ARMv7 (Raspberry Pi 3)
-- **Multiple Package Formats**: .deb, .rpm, AppImage, tarballs
-- **Automated CI/CD**: GitHub Actions with multi-matrix builds and releases
+- **Real extracted shell**: packages the actual `.vite/build` and `webview` assets from Codex.app
+- **OSS backend contract match**: stages `resources/codex`, `resources/codex-app-server`, and `resources/rg`
+- **Linux package formats**: `.deb`, `AppImage`, and `.tar.gz`
+- **Automated CI/CD**: GitHub Actions builds x86_64 and ARM64 package sets and can smoke-test the unpacked app
 - **Zero Vendor Approach**: Codex.app downloaded at build time, only source code in repository
 - **Open Source**: Build scripts and infrastructure under MIT license
 - **Reproducible Builds**: Docker-based for consistency across platforms
 
 ## Quick Start
 
-### Ubuntu/Debian
-
-```bash
-wget https://github.com/openai/codex-linux/releases/download/latest/codex-linux_0.1.0_arm64.deb
-sudo dpkg -i codex-linux_0.1.0_arm64.deb
-codex
-```
-
-### Fedora/RHEL
-
-```bash
-wget https://github.com/openai/codex-linux/releases/download/latest/codex-linux-0.1.0-x86_64.rpm
-sudo dnf install ./codex-linux-0.1.0-x86_64.rpm
-codex
-```
-
-### Alpine / Any Linux
-
-```bash
-wget https://github.com/openai/codex-linux/releases/download/latest/Codex-0.1.0-arm64.AppImage
-chmod +x Codex-0.1.0-arm64.AppImage
-./Codex-0.1.0-arm64.AppImage
-```
-
 ### Build Locally
 
 ```bash
 git clone https://github.com/openai/codex-linux
 cd codex-linux
-make quick       # Fast build with x86_64 + arm64
-# or
-make ci-build    # Full CI build (downloads Codex.app)
+make quick
+ls -lh release/
 ```
 
 ## Architecture
@@ -100,46 +75,27 @@ Codex-rs (OSS Backend)
   v
 Linux Packages
   |
-  +-- .deb (Ubuntu, Debian)
-  +-- .rpm (Fedora, RHEL)
-  +-- AppImage (Universal)
-  +-- .tar.gz (All platforms)
-  +-- Architectures: x86_64, arm64, armv7
+  +-- .deb (native dpkg-deb path)
+  +-- AppImage
+  +-- .tar.gz
+  +-- Architectures: x86_64, arm64
 ```
 
 ## Supported Platforms
 
-### Distributions
-
-| Distribution | Version | Architectures | Package Format | Status |
-|--------------|---------|---------------|----------------|--------|
-| Ubuntu | 22.04 LTS | x86_64, arm64, armv7 | deb, AppImage, tar.gz | Supported |
-| Debian | 11+ | x86_64, arm64, armv7 | deb, AppImage, tar.gz | Supported |
-| Fedora | 38+ | x86_64, arm64 | rpm, tar.gz | Supported |
-| Alpine | Latest, 3.18 | x86_64, arm64 | tar.gz, apk | Supported |
-
-### Devices
-
-- Intel/AMD x86_64: Any Linux distribution
-- Apple Silicon: Via Docker Desktop or UTM
-- Raspberry Pi 4+: ARM64 with Raspberry Pi OS 64-bit
-- Raspberry Pi 3: ARMv7 with Raspberry Pi OS 32-bit
-- AWS Graviton: ARM64 instances
-- Embedded/IoT: Any ARM-based Linux device
+| Target | Artifacts | Validation status |
+|--------|-----------|-------------------|
+| Ubuntu ARM64 VM | `.deb`, `AppImage` | Verified launch and app-server handshake |
+| Ubuntu ARM64 VM | `.tar.gz` | Built, not runtime-validated in this pass |
+| Linux x86_64 | packages | Built in CI, needs dedicated runtime validation |
 
 ## Build System
 
 ### Local Builds
 
 ```bash
-# Quick build (x86_64 + arm64, Ubuntu only)
+# Quick build
 make quick
-
-# Full build (all architectures and distributions)
-make full
-
-# Manual CI-style build with Codex.app download
-make ci-build
 
 # Build-specific formats (requires app/ directory)
 make deb
@@ -150,15 +106,11 @@ make tarball
 ### CI/CD Pipeline
 
 Triggered automatically on:
-- **Tag push** (v*): Creates GitHub Release with all packages
-- **Push to main/develop**: Builds and uploads artifacts (30 days retention)
-- **Manual dispatch**: Specify custom Codex.app version
+- **Pull requests**: quick package builds for x86_64 and ARM64
+- **Pushes to main/develop**: quick package builds for x86_64 and ARM64
+- **Tag push** (`v*`): full package builds, smoke tests, and GitHub release publishing
 
-**Build Matrix:**
-- Quick mode (PRs): 2 architectures × 1 distribution (x86_64, arm64 on Ubuntu)
-- Full mode (releases): 3 architectures × 3+ distributions (x86_64, arm64, armv7 on Ubuntu, Debian, Fedora, Alpine)
-
-See [CI_CD.md](CI_CD.md) for complete CI/CD documentation.
+See [CI_CD.md](CI_CD.md) and [TESTING.md](TESTING.md) for the current CI and runtime validation flow.
 
 ## Build Artifacts
 

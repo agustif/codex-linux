@@ -5,7 +5,21 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install build dependencies
-RUN apt-get update && apt-get install -y \
+RUN arch="$(dpkg --print-architecture)" \
+    && if [ "$arch" = "arm64" ]; then \
+        printf '%s\n' \
+          'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse' \
+          'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse' \
+          'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-backports main restricted universe multiverse' \
+          'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse' \
+          'deb [arch=i386] http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse' \
+          'deb [arch=i386] http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe multiverse' \
+          'deb [arch=i386] http://archive.ubuntu.com/ubuntu jammy-backports main restricted universe multiverse' \
+          'deb [arch=i386] http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse' \
+          > /etc/apt/sources.list; \
+    fi \
+    && dpkg --add-architecture i386 \
+    && apt-get update && apt-get install -y \
     # Build essentials
     build-essential \
     curl \
@@ -28,9 +42,13 @@ RUN apt-get update && apt-get install -y \
     libuuid1 \
     libappindicator3-1 \
     libasound2 \
+    xvfb \
     # For AppImage
     libfuse2 \
     file \
+    # electron-builder bundles a 32-bit fpm helper for deb packaging
+    libc6:i386 \
+    libstdc++6:i386 \
     # Clean up
     && rm -rf /var/lib/apt/lists/*
 
@@ -47,8 +65,10 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 WORKDIR /build
 
 # Copy project files
+COPY app/ /build/app/
 COPY codex-oss/ /build/codex-oss/
 COPY codex-linux-fork/ /build/codex-linux-fork/
+COPY scripts/ /build/scripts/
 
 # Build script
 COPY docker/build.sh /build/build.sh

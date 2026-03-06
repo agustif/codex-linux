@@ -3,15 +3,15 @@
 # Default target
 all: quick
 
-# Quick build (x86_64 + arm64, Ubuntu only) - for PRs/testing
+# Local package build using the extracted desktop shell
 quick:
-	@echo "🚀 Quick build (x86_64 + arm64, Ubuntu only)"
+	@echo "🚀 Local package build using the extracted desktop shell"
 	@echo "Run: gh workflow run ci.yml --ref $$(git rev-parse --abbrev-ref HEAD) -f build_mode=quick"
 	@./scripts/ci-build.sh latest
 
-# Full build (all archs + distros) - for releases
+# Local rebuild using the same entrypoint
 full:
-	@echo "🚀 Full build (all architectures + distributions)"
+	@echo "🚀 Local rebuild using the extracted desktop shell with the full CI mode"
 	@echo "Run: gh workflow run ci.yml --ref $$(git rev-parse --abbrev-ref HEAD) -f build_mode=full"
 	@./scripts/ci-build.sh latest
 
@@ -24,17 +24,17 @@ build:
 # Build only .deb package
 deb:
 	@echo "Building .deb package..."
-	docker-compose -f docker/docker-compose.yml run --rm build-deb 2>/dev/null || echo "Use: make build"
+	docker-compose -f docker/docker-compose.yml run --rm build-deb 2>/dev/null || { echo "Use: make build"; exit 1; }
 
 # Build only AppImage
 appimage:
 	@echo "Building AppImage..."
-	docker-compose -f docker/docker-compose.yml run --rm build-appimage 2>/dev/null || echo "Use: make build"
+	docker-compose -f docker/docker-compose.yml run --rm build-appimage 2>/dev/null || { echo "Use: make build"; exit 1; }
 
 # Build tarball
 tarball:
 	@echo "Building tarball..."
-	cd codex-linux-fork && npm run build:tarball 2>/dev/null || echo "Use: make build"
+	cd codex-linux-fork && npm run build:tarball 2>/dev/null || { echo "Use: make build"; exit 1; }
 
 # CI build with Codex.app download
 ci-build:
@@ -67,12 +67,12 @@ help:
 	@echo "Codex Linux Fork - Build System"
 	@echo ""
 	@echo "🎯 Local Builds:"
-	@echo "  make quick      - Quick build locally (x86_64 + arm64)"
+	@echo "  make quick      - Build local packages with the extracted shell"
 	@echo "  make build      - Docker build (legacy)"
 	@echo "  make dev        - Run Electron wrapper"
 	@echo ""
 	@echo "📦 CI/CD Workflows:"
-	@echo "  make full       - Trigger full CI (all archs + distros)"
+	@echo "  make full       - Re-run the local extracted-shell build"
 	@echo "  make ci-build   - Manual CI build with Codex.app download"
 	@echo ""
 	@echo "🧹 Maintenance:"
@@ -82,5 +82,5 @@ help:
 	@echo ""
 	@echo "📍 CI/CD:"
 	@echo "  Unified workflow: .github/workflows/ci.yml"
-	@echo "  Quick mode (PR): 2 archs × 1 distro"
-	@echo "  Full mode (tag): 3 archs × 3+ distros"
+	@echo "  Quick mode: x86_64 + arm64 package builds"
+	@echo "  Full mode: x86_64 + arm64 package builds plus smoke tests"

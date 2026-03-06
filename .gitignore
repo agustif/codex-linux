@@ -17,6 +17,7 @@ Codex.dmg
 codex-linux-fork/node_modules/
 codex-linux-fork/dist/
 codex-linux-fork/dist-*
+codex-linux-fork/bin/
 
 # Rust
 codex-oss/codex-rs/target/
@@ -37,3 +38,7 @@ codex-oss/codex-rs/target/
 # Cache
 .npm-cache/
 docker/cache/
+
+# Local reverse-engineering scratch space
+theseus/
+CODEX_INTERNALS_MAP.md

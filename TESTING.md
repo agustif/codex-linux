@@ -2,12 +2,12 @@
 
 ## Quick Test on OrbStack
 
-Test the full Linux build in an Ubuntu VM.
+Test the shipped Linux artifacts in an Ubuntu ARM64 VM.
 
 ### Prerequisites
 
 - OrbStack installed (`brew install orbstack`)
-- Latest Codex app extracted to `app/` directory (or script will download it)
+- Latest Codex app extracted to `app/` directory
 
 ### Step 1: Build on macOS
 
@@ -15,12 +15,14 @@ Test the full Linux build in an Ubuntu VM.
 make quick
 ```
 
-This builds arm64 and x86_64 packages on macOS using Docker.
+This builds a local package set using the extracted desktop shell.
 
 Check output:
 ```bash
 ls -lh release/
-# Should show: .deb, AppImage, .tar.gz packages
+# Should show at least:
+# - Codex-0.1.0-arm64.AppImage
+# - codex-linux_0.1.0_arm64.deb
 ```
 
 ### Step 2: Create OrbStack VM
@@ -32,49 +34,44 @@ orbctl create ubuntu-latest codex-test
 ### Step 3: Install Dependencies in VM
 
 ```bash
-orbctl shell codex-test << 'EOF'
+orbctl run -m codex-test bash -lc '
 sudo apt-get update
 sudo apt-get install -y \
-  libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 libatspi2.0-0 \
-  libuuid1 libappindicator3-1 libasound2 libfuse2 \
-  ca-certificates libsecret-1-0
-EOF
+  gdebi xvfb libfuse2 libsecret-1-0 libgtk-3-0 libnotify4 \
+  libnss3 libxss1 libxtst6 libatspi2.0-0 libuuid1 libappindicator3-1
+'
 ```
 
 ### Step 4: Test .deb Package
 
 ```bash
-# Copy package to VM
-orbctl copy release/codex-linux_*_arm64.deb codex-test:~/
-
-# Install and test
-orbctl shell codex-test << 'EOF'
-sudo dpkg -i ~/codex-linux_*.deb
+orbctl run -m codex-test bash -lc '
+sudo gdebi -n /mnt/mac/Users/af/codex_app_reverse_engineer/release/codex-linux_0.1.0_arm64.deb
 which codex
-codex --help
-EOF
+rm -f /tmp/codex-deb-launch.log
+xvfb-run -a sh -lc "/opt/Codex/codex > /tmp/codex-deb-launch.log 2>&1 & pid=\$!; sleep 12; kill -0 \$pid"
+tail -n 120 /tmp/codex-deb-launch.log
+'
 ```
 
 ### Step 5: Test AppImage
 
 ```bash
-# Copy AppImage to VM
-orbctl copy release/Codex-*-arm64.AppImage codex-test:~/
-
-# Make executable and test
-orbctl shell codex-test << 'EOF'
-chmod +x ~/Codex-*.AppImage
-~/Codex-*.AppImage --help
-EOF
+orbctl run -m codex-test bash -lc '
+chmod +x /mnt/mac/Users/af/codex_app_reverse_engineer/release/Codex-0.1.0-arm64.AppImage
+rm -f /tmp/codex-appimage-launch.log
+xvfb-run -a sh -lc "/mnt/mac/Users/af/codex_app_reverse_engineer/release/Codex-0.1.0-arm64.AppImage > /tmp/codex-appimage-launch.log 2>&1 & pid=\$!; sleep 12; kill -0 \$pid"
+tail -n 120 /tmp/codex-appimage-launch.log
+'
 ```
 
-### Step 6: Verify Dependencies
+### Step 6: Verify the Packaged Runtime Contract
 
 ```bash
-orbctl shell codex-test << 'EOF'
-ldd /usr/bin/codex
-ldd $(which codex)
-EOF
+orbctl run -m codex-test bash -lc '
+ls -lh /opt/Codex/resources
+sed -n "1,80p" /opt/Codex/resources/codex
+'
 ```
 
 ## Debugging
@@ -104,28 +101,23 @@ du -sh app/
 
 ## Headless Testing
 
-Test binary functionality without GUI:
+Test Electron startup without a full desktop session:
 
 ```bash
-# In VM
-export RUST_LOG=debug
-timeout 5 codex 2>&1 | head -20 || echo "OK (expected timeout)"
-
-# Check if it starts and loads config
-codex --version
-codex --help
+# In the VM
+xvfb-run -a /opt/Codex/codex > /tmp/codex.log 2>&1 &
+sleep 10
+tail -n 80 /tmp/codex.log
 ```
 
 ## Test Matrix
 
 | Package | Platform | Test Command |
 |---------|----------|--------------|
-| .deb | Ubuntu arm64 | `sudo dpkg -i *.deb && codex --help` |
-| .deb | Debian arm64 | Same as Ubuntu |
-| AppImage | Ubuntu x86_64 | `chmod +x *.AppImage && ./Codex.AppImage --help` |
-| AppImage | Ubuntu arm64 | Same as x86_64 |
-| .tar.gz | Alpine arm64 | Extract and run `./Codex/codex-arm64` |
-| Binary | Any | `/path/to/codex --help` |
+| .deb | Ubuntu arm64 | `sudo gdebi -n *.deb && xvfb-run -a /opt/Codex/codex` |
+| AppImage | Ubuntu arm64 | `chmod +x *.AppImage && xvfb-run -a ./Codex-*.AppImage` |
+| .tar.gz | Ubuntu arm64 | Extract and run under `xvfb-run` |
+| x86_64 packages | Linux x86_64 | Pending dedicated host validation |
 
 ## Full Test Workflow
 
@@ -136,10 +128,10 @@ echo "1. Build locally"
 make quick
 
 echo "2. Create VM"
-orbctl create ubuntu-latest test-$(date +%s)
+VM="codex-test-$(date +%s)"
+orbctl create ubuntu-latest "$VM"
 
 echo "3. Test packages"
-VM="codex-test"
 
 orbctl copy release/*.deb $VM:~/
 orbctl copy release/Codex*.AppImage $VM:~/
@@ -148,20 +140,19 @@ orbctl copy release/*.tar.gz $VM:~/
 orbctl shell $VM << 'EOF'
 # Install deps
 sudo apt-get update
-sudo apt-get install -y libgtk-3-0 libnotify4 libnss3
+sudo apt-get install -y libgtk-3-0 libnotify4 libnss3 xvfb
 
 # Test .deb
 sudo dpkg -i *.deb
 which codex
-codex --help | head -5
+timeout 15 xvfb-run -a codex 2>&1 | head -20 || true
 
 # Test AppImage
 chmod +x Codex*.AppImage
-./Codex*.AppImage --help | head -5
+timeout 15 xvfb-run -a ./Codex*.AppImage 2>&1 | head -20 || true
 
 # Test binary
-file codex-*
-./codex-* --help || echo "Binary test OK"
+ldd $(which codex)
 
 echo "All tests passed!"
 EOF
@@ -190,7 +181,7 @@ Push to a branch (or PR) to trigger quick build:
 git checkout -b test/ci
 git push origin test/ci
 # Go to GitHub Actions tab
-# Watch build for x86_64 + arm64
+# Watch package builds for x86_64 + arm64
 ```
 
 ### Test Full Mode
@@ -200,7 +191,7 @@ Push a tag to trigger full build:
 ```bash
 git tag v0.1.0-test
 git push origin v0.1.0-test
-# Check GitHub Actions for multi-arch, multi-distro build
+# Check GitHub Actions for package builds plus smoke tests
 # Release will be created automatically
 ```
 
@@ -216,10 +207,9 @@ git push origin v0.1.0-test
 ### VM Connection Issues
 
 ```bash
-orbctl list          # List VMs
-orbctl shell codex-test "echo test"  # Test connection
-orbctl stop codex-test  # Stop
-orbctl rm codex-test    # Delete
+orbctl run -m codex-test bash -lc 'echo test'
+orbctl stop codex-test
+orbctl rm codex-test
 ```
 
 ### Dependency Issues
@@ -244,9 +234,8 @@ sudo apt-get install -y libgtk-3-dev
 ## Success Criteria
 
 - .deb installs without errors
-- `which codex` returns path
-- `codex --help` shows usage
-- `codex --version` shows version
-- Binary dependencies resolve (`ldd` shows no "not found")
-- AppImage runs and shows help
-- No runtime segfaults or crashes
+- `which codex` returns `/usr/bin/codex`
+- App startup log reaches `initialize_handshake_result ... outcome=success`
+- App startup log reaches `Codex app-server connection state changed ... next=connected`
+- `account/read`, `thread/list`, `config/read`, `model/list`, and `app/list` route successfully
+- AppImage and installed `.deb` both stay alive under `xvfb`

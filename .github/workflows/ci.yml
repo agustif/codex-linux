@@ -1,4 +1,4 @@
-name: CI - Build & Release
+name: CI - Linux Packages
 
 on:
   push:
@@ -13,9 +13,12 @@ on:
         required: false
         default: 'latest'
       build_mode:
-        description: 'Build mode (quick=x86_64+arm64, full=all archs+distros)'
+        description: 'Build mode (quick=package only, full=package + smoke)'
         required: false
         default: 'quick'
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -27,16 +30,13 @@ env:
 
 jobs:
   detect:
-    name: Detect versions & build matrix
+    name: Detect versions and matrix
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: read
     outputs:
       repo_version: ${{ steps.version.outputs.repo }}
       codex_version: ${{ steps.version.outputs.codex }}
       is_release: ${{ steps.version.outputs.is_release }}
-      is_pr: ${{ github.event_name == 'pull_request' }}
       build_mode: ${{ steps.mode.outputs.mode }}
       matrix_json: ${{ steps.matrix.outputs.json }}
 
@@ -44,30 +44,29 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          submodules: recursive
 
       - name: Detect versions
         id: version
         env:
           INPUT_CODEX_VERSION: ${{ github.event.inputs.codex_version }}
         run: |
+          set -euo pipefail
+
+          REPO_VERSION="$(node -p "require('./codex-linux-fork/package.json').version")"
+          IS_RELEASE=false
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             REPO_VERSION="${GITHUB_REF#refs/tags/v}"
-          else
-            REPO_VERSION=$(git describe --tags --always 2>/dev/null | sed 's/^v//' || echo "0.1.0-dev")
+            IS_RELEASE=true
           fi
+
+          CODEX_VERSION="${INPUT_CODEX_VERSION:-latest}"
+          if [ -z "$CODEX_VERSION" ] || [ "$CODEX_VERSION" = "latest" ]; then
+            CODEX_VERSION="$(curl --retry 3 --retry-delay 2 -fsSL https://api.github.com/repos/openai/codex/releases/latest | jq -r '.tag_name' | sed 's/^v//' || echo latest)"
+          fi
+
           echo "repo=$REPO_VERSION" >> "$GITHUB_OUTPUT"
-          CODEX_VERSION="$INPUT_CODEX_VERSION"
-          if [ "$CODEX_VERSION" = "latest" ] || [ -z "$CODEX_VERSION" ]; then
-            CODEX_VERSION=$(curl --retry 3 --retry-delay 2 -fsSL https://api.github.com/repos/openai/codex/releases/latest | jq -r '.tag_name' | sed 's/^v//' || echo "0.1.0")
-          fi
           echo "codex=$CODEX_VERSION" >> "$GITHUB_OUTPUT"
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            echo "is_release=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_release=false" >> "$GITHUB_OUTPUT"
-          fi
-          echo "Repo: v$REPO_VERSION | Codex: v$CODEX_VERSION"
+          echo "is_release=$IS_RELEASE" >> "$GITHUB_OUTPUT"
 
       - name: Determine build mode
         id: mode
@@ -75,34 +74,59 @@ jobs:
           INPUT_BUILD_MODE: ${{ github.event.inputs.build_mode }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          MODE="$INPUT_BUILD_MODE"
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            MODE="quick"
-          elif [ -z "$MODE" ]; then
-            MODE="full"
+          set -euo pipefail
+
+          MODE="${INPUT_BUILD_MODE:-}"
+          if [ -z "$MODE" ]; then
+            if [ "$EVENT_NAME" = "pull_request" ]; then
+              MODE=quick
+            elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+              MODE=full
+            else
+              MODE=quick
+            fi
           fi
+
+          case "$MODE" in
+            quick|full) ;;
+            *)
+              echo "Unsupported build mode: $MODE" >&2
+              exit 1
+              ;;
+          esac
+
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
-          echo "Build mode: $MODE"
 
       - name: Generate build matrix
         id: matrix
         env:
           BUILD_MODE: ${{ steps.mode.outputs.mode }}
         run: |
-          if [ "$BUILD_MODE" = "quick" ]; then
-            MATRIX='{"include":[{"arch":"x86_64","docker_arch":"amd64","distro":"ubuntu-22.04","base":"ubuntu:22.04"},{"arch":"arm64","docker_arch":"arm64","distro":"ubuntu-22.04","base":"ubuntu:22.04"}]}'
-          else
-            MATRIX='{"include":[{"arch":"x86_64","docker_arch":"amd64","distro":"ubuntu-22.04","base":"ubuntu:22.04"},{"arch":"arm64","docker_arch":"arm64","distro":"ubuntu-22.04","base":"ubuntu:22.04"},{"arch":"armv7l","docker_arch":"arm/v7","distro":"ubuntu-22.04","base":"ubuntu:22.04"},{"arch":"x86_64","docker_arch":"amd64","distro":"debian-11","base":"debian:11-slim"},{"arch":"arm64","docker_arch":"arm64","distro":"debian-11","base":"debian:11-slim"},{"arch":"x86_64","docker_arch":"amd64","distro":"fedora-38","base":"fedora:38"},{"arch":"arm64","docker_arch":"arm64","distro":"fedora-38","base":"fedora:38"},{"arch":"x86_64","docker_arch":"amd64","distro":"alpine-latest","base":"alpine:latest"},{"arch":"arm64","docker_arch":"arm64","distro":"alpine-latest","base":"alpine:latest"}]}'
-          fi
-          echo "json=$MATRIX" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
 
-  prepare:
-    name: Download & extract Codex.app
+          if [ "$BUILD_MODE" = "full" ]; then
+            SMOKE=true
+          else
+            SMOKE=false
+          fi
+
+          MATRIX_JSON="$(jq -cn --argjson smoke "$SMOKE" '
+            {
+              include: [
+                { arch: "x86_64", docker_platform: "amd64", smoke: $smoke },
+                { arch: "arm64", docker_platform: "arm64", smoke: $smoke }
+              ]
+            }
+          ')"
+
+          echo "json=$MATRIX_JSON" >> "$GITHUB_OUTPUT"
+
+  prepare-shell:
+    name: Download and extract Codex.app
     needs: detect
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
+    timeout-minutes: 20
+
     steps:
       - uses: actions/checkout@v6
         with:
@@ -110,440 +134,237 @@ jobs:
 
       - name: Install extraction tools
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y p7zip-full
+          npm install -g asar
 
       - name: Download Codex.app
+        env:
+          CODEX_VERSION: ${{ needs.detect.outputs.codex_version }}
         run: |
-          echo "Downloading Codex.app..."
-          if curl -L -f --progress-bar \
-            "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg" \
-            -o Codex.dmg 2>/dev/null; then
-            echo "Downloaded from official source"
-          else
-            echo "Official URL failed, skipping."
-            touch Codex.dmg.skipped
-          fi
+          set -euo pipefail
 
-      - name: Install asar tool
-        run: npm install -g asar
+          urls=(
+            "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg"
+            "https://storage.googleapis.com/codex-releases/Codex-${CODEX_VERSION}.dmg"
+            "https://codex-releases.s3.amazonaws.com/Codex-${CODEX_VERSION}.dmg"
+          )
 
-      - name: Extract Codex.app
-        if: hashFiles('Codex.dmg') != ''
-        run: |
-          echo "Extracting Codex.app DMG..."
-          mkdir -p extracted app
-          7z x Codex.dmg -oextracted/ 2>&1 | tail -20 || true
-          RESOURCES_PATH="extracted/Codex Installer/Codex.app/Contents/Resources"
-          if [ ! -d "$RESOURCES_PATH" ]; then
-            echo "ERROR: Could not find Resources at expected path"
-            find extracted -type d -maxdepth 3
-            exit 1
-          fi
-          echo "Copying Resources to app/..."
-          cp -r "$RESOURCES_PATH"/* app/
-          echo "Cleaning up macOS extended attribute files..."
-          find app -type f -print0 | while IFS= read -r -d '' file; do
-            if echo "$file" | grep -q ":"; then
-              rm "$file"
+          rm -f Codex.dmg
+          for url in "${urls[@]}"; do
+            echo "Trying $url"
+            if curl --retry 3 --retry-delay 2 -fL "$url" -o Codex.dmg; then
+              break
             fi
           done
-          echo "Extracting app.asar..."
-          if [ -f "app/app.asar" ]; then
-            mkdir -p app/webview
-            asar extract app/app.asar app/webview/
-            echo "app.asar extracted successfully"
-            find app/webview -maxdepth 1 -type f -printf "%p\\n" | head -10
-          else
-            echo "WARNING: app.asar not found"
+
+          test -f Codex.dmg
+
+      - name: Extract desktop shell
+        run: |
+          set -euo pipefail
+
+          rm -rf extracted app
+          mkdir -p extracted app
+          7z x Codex.dmg -oextracted >/tmp/codex-7z.log
+
+          RESOURCES_PATH="extracted/Codex Installer/Codex.app/Contents/Resources"
+          if [ ! -d "$RESOURCES_PATH" ]; then
+            echo "Expected resources path missing" >&2
+            find extracted -maxdepth 4 -type d | sort
+            exit 1
           fi
 
-      - name: Cache app assets
-        uses: actions/upload-artifact@v7
+          cp -R "$RESOURCES_PATH"/. app/
+          find app -type f -name '._*' -delete
+
+          if [ -f app/app.asar ]; then
+            asar extract app/app.asar app/
+          fi
+
+          test -f app/.vite/build/main.js
+          test -d app/webview
+
+      - name: Upload extracted shell
+        uses: actions/upload-artifact@v4
         with:
-          name: codex-app-cache
+          name: extracted-shell
           path: app/
           retention-days: 1
-          if-no-files-found: ignore
 
   build:
-    name: Build ${{ matrix.distro }} / ${{ matrix.arch }}
-    needs: [detect, prepare]
+    name: Build ${{ matrix.arch }}
+    needs: [detect, prepare-shell]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.detect.outputs.matrix_json) }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      - name: Download cached app
-        uses: actions/download-artifact@v8
+      - name: Download extracted shell
+        uses: actions/download-artifact@v4
         with:
-          name: codex-app-cache
+          name: extracted-shell
           path: app/
-        continue-on-error: true
 
-      - name: Sync extracted app to webview
-        run: |
-          if [ -d "app/webview" ]; then
-            mkdir -p codex-linux-fork/webview
-            rsync -av app/webview/ codex-linux-fork/webview/ 2>/dev/null || cp -r app/webview/* codex-linux-fork/webview/
-            echo "Synced app/webview to codex-linux-fork/webview"
-          else
-            echo "Note: app/webview not available"
-          fi
+      - name: Stage extracted shell
+        run: bash ./scripts/prepare-linux-fork.sh
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@v3
 
-      - name: Build for ${{ matrix.distro }} / ${{ matrix.arch }}
+      - name: Build toolchain image
         run: |
-          ARCH="${{ matrix.arch }}"
-          DISTRO="${{ matrix.distro }}"
-          BASE_IMAGE="${{ matrix.base }}"
-          DOCKER_ARCH="${{ matrix.docker_arch }}"
-          
-          echo "Building for $DISTRO/$ARCH..."
-          
-          cat > /tmp/build.sh << 'SCRIPT_EOF'
-          #!/bin/sh
-          set -ex
-          
-          ARCH=$1
-          DISTRO=$2
-          
-          echo "===== BUILD: $DISTRO / $ARCH ====="
-          echo "PWD: $(pwd)"
-          
-          # ===== DEPS: Install based on distro
-          echo "[INSTALL] Dependencies for $DISTRO..."
-          case "$DISTRO" in
-            ubuntu-22.04|debian-11)
-              apt-get update
-              apt-get install -y \
-                build-essential curl wget git pkg-config \
-                libssl-dev libcap-dev ca-certificates libsecret-1-dev \
-                libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils \
-                libatspi2.0-0 libuuid1 libappindicator3-1 libasound2 libfuse2 \
-                file p7zip-full python3
-              ;;
-            fedora-38)
-              dnf install -y \
-                gcc g++ make curl wget git openssl-devel \
-                libcap-devel libsecret-devel gtk3 libnotify nss libXScrnSaver libXtst xdg-utils \
-                at-spi2-core file p7zip-plugins python3 pkgconf
-              ;;
-            alpine-latest)
-              apk add --no-cache \
-                build-base curl wget git openssl-dev perl \
-                libcap-dev libsecret-dev gtk+3.0 libnotify nss xdg-utils file \
-                python3 bash pkgconf
-              ;;
-          esac
-          
-          # Verify cc is available
-          which cc || (echo "ERROR: cc not found!" && exit 1)
-          cc --version | head -1
-          
-          # ===== NODE: Install NodeJS (handle armv7l specially)
-          echo "[INSTALL] Node.js..."
-          case "$DISTRO" in
-            ubuntu-*|debian-*)
-              if [ "$ARCH" = "armv7l" ]; then
-                # NodeSource doesn't support armhf, use distro package
-                apt-get install -y nodejs npm
-              else
-                curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-                apt-get install -y nodejs
-              fi
-              ;;
-            fedora-*)
-              dnf install -y nodejs
-              ;;
-            alpine-*)
-              apk add --no-cache nodejs npm
-              ;;
-          esac
-          node --version
-          npm --version
-          
-          # ===== RUST: Install Rust
-          echo "[INSTALL] Rust..."
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y -q
-          export PATH="$HOME/.cargo/bin:$PATH"
-          # Use system git on 32-bit to avoid EOVERFLOW in libgit2
-          if [ "$ARCH" = "armv7l" ]; then
-            export CARGO_NET_GIT_FETCH_WITH_CLI=true
-            # Clear any existing cargo cache to avoid EOVERFLOW issues
-            rm -rf "$HOME/.cargo/git/db" "$HOME/.cargo/registry/cache"
-            # Force install latest git for armv7l from git-core PPA
-            echo "Installing latest git for armv7l..."
-            apt-get update
-            apt-get install -y software-properties-common
-            add-apt-repository -y ppa:git-core/ppa
-            apt-get update
-            apt-get install -y git
-            git --version
-          fi
-          # Configure pkg-config for libcap
-          export PKG_CONFIG_ALLOW_SYSTEM_LIBS=1
-          export PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1
-          case "$DISTRO" in
-            ubuntu-*|debian-*)
-              export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/lib/pkgconfig:$PKG_CONFIG_PATH
-              ;;
-            fedora-*)
-              # Try multiple possible locations for libcap.pc
-              for path in /usr/lib64/pkgconfig /usr/lib/pkgconfig /usr/share/pkgconfig; do
-                if [ -f "$path/libcap.pc" ]; then
-                  export PKG_CONFIG_PATH="$path:$PKG_CONFIG_PATH"
-                  echo "Found libcap.pc at $path"
+          set -euo pipefail
+          docker buildx build \
+            --load \
+            --platform "linux/${{ matrix.docker_platform }}" \
+            -f docker/Dockerfile \
+            -t "codex-build:${{ matrix.arch }}" \
+            .
+
+      - name: Build Linux packages
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --platform "linux/${{ matrix.docker_platform }}" \
+            -v "$PWD:/build" \
+            "codex-build:${{ matrix.arch }}" \
+            bash /build/docker/build.sh
+
+      - name: Smoke test unpacked app
+        if: ${{ matrix.smoke }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --platform "linux/${{ matrix.docker_platform }}" \
+            -v "$PWD:/build" \
+            "codex-build:${{ matrix.arch }}" \
+            bash -lc '
+              set -euo pipefail
+              cd /build/codex-linux-fork/dist
+
+              UNPACKED_DIR=""
+              for candidate in "linux-${{ matrix.arch }}-unpacked" "linux-x64-unpacked" "linux-unpacked"; do
+                if [ -d "$candidate" ]; then
+                  UNPACKED_DIR="$candidate"
                   break
                 fi
               done
-              # Also install libcap-static if available
-              dnf install -y libcap-static 2>/dev/null || echo "libcap-static not available, using shared"
-              ;;
-            alpine-*)
-              export PKG_CONFIG_PATH=/usr/lib/pkgconfig:$PKG_CONFIG_PATH
-              ;;
-          esac
-          echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
-          echo "Searching for libcap.pc:"
-          find /usr -name "libcap.pc" 2>/dev/null | head -5
-          pkg-config --exists libcap && echo "libcap found via pkg-config" || echo "WARNING: libcap not found via pkg-config"
-          rustc --version
-          cargo --version
-          
-          cd /build
-          
-          # ===== [1/5] BUILD RUST BACKEND
-          echo "[1/5] Building Rust binary ($ARCH)..."
-          if [ ! -d "codex-oss/codex-rs" ]; then
-            echo "ERROR: codex-oss/codex-rs not found!"
-            find /build -maxdepth 2 -type d | head -10
-            exit 1
-          fi
-          
-          cd codex-oss/codex-rs
-          echo "Building with CARGO_TARGET_DIR=$CARGO_TARGET_DIR"
-          cargo build --release -p codex-app-server 2>&1 | tee /tmp/build.log || {
-            echo "ERROR: Cargo build failed!"
-            tail -50 /tmp/build.log
-            exit 1
-          }
-          cd -
-          
-          mkdir -p codex-linux-fork/bin
-          # Handle CARGO_TARGET_DIR override
-          if [ -n "$CARGO_TARGET_DIR" ]; then
-            BINARY_PATH="$CARGO_TARGET_DIR/release/codex-app-server"
-          else
-            BINARY_PATH="codex-oss/codex-rs/target/release/codex-app-server"
-          fi
-          
-          echo "Looking for binary at: $BINARY_PATH"
-          if [ ! -f "$BINARY_PATH" ]; then
-            echo "ERROR: Binary not built at $BINARY_PATH!"
-            echo "Searching for codex-app-server in target directories:"
-            find /build -name "codex-app-server" -type f 2>/dev/null | head -10
-            echo "CARGO_TARGET_DIR contents:"
-            ls -la "$CARGO_TARGET_DIR" 2>/dev/null || echo "CARGO_TARGET_DIR not accessible"
-            exit 1
-          fi
-          
-          cp "$BINARY_PATH" codex-linux-fork/bin/codex
-          chmod +x codex-linux-fork/bin/codex
-          echo "Binary: $(du -h codex-linux-fork/bin/codex | cut -f1)"
-          
-          # ===== [2/5] DOWNLOAD RIPGREP
-          echo "[2/5] Downloading ripgrep ($ARCH)..."
-          case "$ARCH" in
-            x86_64) RG_URL="https://github.com/BurntSushi/ripgrep/releases/download/14.1.0/ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz" ;;
-            arm64|aarch64) RG_URL="https://github.com/BurntSushi/ripgrep/releases/download/14.1.0/ripgrep-14.1.0-aarch64-unknown-linux-gnu.tar.gz" ;;
-            armv7l) RG_URL="https://github.com/BurntSushi/ripgrep/releases/download/14.1.0/ripgrep-14.1.0-armv7-unknown-linux-gnueabihf.tar.gz" ;;
-          esac
-          
-          mkdir -p codex-linux-fork/resources
-          if curl -sL --fail "$RG_URL" | tar xz -C codex-linux-fork/resources --strip-components=1 2>/dev/null; then
-            chmod +x codex-linux-fork/resources/rg
-            echo "ripgrep ready"
-          else
-            echo "WARNING: ripgrep download failed (non-fatal)"
-          fi
-          
-          # ===== [3/5] INSTALL NODE DEPENDENCIES
-          echo "[3/5] Installing Node dependencies..."
-          cd codex-linux-fork
-          npm install --production
-          echo "Dependencies installed"
-          
-          # ===== [4/5] BUILD PACKAGES
-          echo "[4/5] Building packages..."
-          npm run build:linux
-          echo "Packages built"
-          
-          # ===== [5/5] CREATE CHECKSUMS
-          echo "[5/5] Creating checksums..."
-          if [ -d dist ]; then
-            cd dist
-            # Only checksum files, not directories
-            find . -maxdepth 1 -type f -exec sha256sum {} \; > SHA256SUMS
-            echo "Checksums:"
-            head -3 SHA256SUMS
-          else
-            echo "WARNING: dist/ not found"
-          fi
-          
-          echo ""
-          echo "===== BUILD COMPLETE ($DISTRO/$ARCH) ====="
-          SCRIPT_EOF
-          
-          chmod +x /tmp/build.sh
-          
-          # Use sh for Alpine (bash installed by script), bash for others
-          RUNNER="sh"
-          if echo "$DISTRO" | grep -qv alpine; then
-            RUNNER="bash"
-          fi
-          
-          docker run --rm \
-            --platform "linux/$DOCKER_ARCH" \
-            --volume "$(pwd):/build:rw" \
-            --volume "/tmp/build.sh:/build.sh:ro" \
-            -e "CARGO_TARGET_DIR=/build/target-cache" \
-            -e "CARGO_TERM_COLOR=always" \
-            --workdir /build \
-            "$BASE_IMAGE" \
-            $RUNNER /build.sh "$ARCH" "$DISTRO"
+
+              if [ -z "$UNPACKED_DIR" ]; then
+                echo "Missing unpacked Electron directory" >&2
+                find . -maxdepth 1 -type d -name "linux*-unpacked"
+                exit 1
+              fi
+
+              rm -f /tmp/codex-smoke.log
+              set +e
+              timeout 20 xvfb-run -a "./$UNPACKED_DIR/codex" > /tmp/codex-smoke.log 2>&1
+              code=$?
+              set -e
+
+              if [ "$code" -ne 0 ] && [ "$code" -ne 124 ]; then
+                cat /tmp/codex-smoke.log
+                exit "$code"
+              fi
+
+              grep -q "initialize_handshake_result.*outcome=success" /tmp/codex-smoke.log
+              grep -q "Codex app-server connection state changed.*next=connected" /tmp/codex-smoke.log
+              tail -n 120 /tmp/codex-smoke.log
+            '
 
       - name: Collect artifacts
         if: always()
         run: |
-          ARCH="${{ matrix.arch }}"
-          DISTRO="${{ matrix.distro }}"
-          mkdir -p "artifacts-${DISTRO}-${ARCH}"
-          
-          if [ -d codex-linux-fork/dist ]; then
-            cp codex-linux-fork/dist/* "artifacts-${DISTRO}-${ARCH}/" 2>/dev/null || true
-          fi
-          
-          if [ -f codex-linux-fork/bin/codex ]; then
-            cp codex-linux-fork/bin/codex "artifacts-${DISTRO}-${ARCH}/codex-${ARCH}"
-          fi
-          
-          cat > "artifacts-${DISTRO}-${ARCH}/BUILD_INFO.txt" << EOF
-          Distribution: $DISTRO
-          Architecture: $ARCH
-          Build Date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
-          Repo Version: ${{ needs.detect.outputs.repo_version }}
-          Codex Version: ${{ needs.detect.outputs.codex_version }}
-          EOF
-          
-          ls -lh "artifacts-${DISTRO}-${ARCH}/" || echo "No artifacts"
+          set -euo pipefail
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+          ARTIFACT_DIR="artifacts-${{ matrix.arch }}"
+          mkdir -p "$ARTIFACT_DIR"
+
+          cp release/* "$ARTIFACT_DIR"/ 2>/dev/null || true
+          cp codex-linux-fork/dist/SHA256SUMS "$ARTIFACT_DIR"/SHA256SUMS.${{ matrix.arch }} 2>/dev/null || true
+
+          cat > "$ARTIFACT_DIR/BUILD_INFO.txt" <<EOF
+          Architecture: ${{ matrix.arch }}
+          Docker platform: ${{ matrix.docker_platform }}
+          Repo version: ${{ needs.detect.outputs.repo_version }}
+          Codex version: ${{ needs.detect.outputs.codex_version }}
+          Build mode: ${{ needs.detect.outputs.build_mode }}
+          Build date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          EOF
+
+          ls -lh "$ARTIFACT_DIR"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: artifacts-${{ matrix.distro }}-${{ matrix.arch }}
-          path: artifacts-${{ matrix.distro }}-${{ matrix.arch }}/
+          name: packages-${{ matrix.arch }}
+          path: artifacts-${{ matrix.arch }}/
           retention-days: 30
 
   release:
-    name: Organize & release
+    name: Create GitHub release
     needs: [detect, build]
+    if: ${{ needs.detect.outputs.is_release == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    if: always() && needs.detect.outputs.is_release == 'true'
+    timeout-minutes: 20
     permissions:
       contents: write
 
     steps:
       - uses: actions/checkout@v6
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v8
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
         with:
           path: all-artifacts/
 
       - name: Organize release assets
         run: |
+          set -euo pipefail
+
           mkdir -p release-assets
-          find all-artifacts -type f ! -name ".gitkeep" ! -path "*/codex-app-cache/*" | while read -r f; do
-            filename=$(basename "$f")
-            cp "$f" "release-assets/$filename" 2>/dev/null || true
-          done
+          find all-artifacts -type f \
+            \( -name '*.deb' -o -name '*.AppImage' -o -name '*.tar.gz' -o -name 'BUILD_INFO.txt' -o -name 'SHA256SUMS.*' \) \
+            -exec cp {} release-assets/ \;
+
           cd release-assets
-          find . -type f ! -name "SHA256SUMS*" -exec sha256sum {} \; | sort > SHA256SUMS
-          cat > MANIFEST.md << 'MANIFEST_EOF'
+          find . -maxdepth 1 -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.tar.gz' \) -exec sha256sum {} \; | sort > SHA256SUMS
+
+          cat > MANIFEST.md <<EOF
           # Codex Linux Release
-          
-          **Version**: ${{ needs.detect.outputs.repo_version }}
-          **Codex Version**: ${{ needs.detect.outputs.codex_version }}
-          **Build Date**: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
-          
-          ## Available Packages
-          MANIFEST_EOF
-          for f in ./*; do
-            if [ -f "$f" ]; then
-              case "$f" in
-                *.deb|*.rpm|*AppImage*|*.tar.gz|*codex-*)
-                  size=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null || echo "0")
-                  echo "- $(basename "$f") ($size bytes)" >> MANIFEST.md
-                  ;;
-              esac
+
+          Version: ${{ needs.detect.outputs.repo_version }}
+          Codex version: ${{ needs.detect.outputs.codex_version }}
+          Build mode: ${{ needs.detect.outputs.build_mode }}
+          Build date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          EOF
+
+          for artifact in *.deb *.AppImage *.tar.gz; do
+            if [ -f "$artifact" ]; then
+              size="$(stat -c%s "$artifact")"
+              printf -- '- %s (%s bytes)\n' "$artifact" "$size" >> MANIFEST.md
             fi
           done
-          echo "Release assets organized:"
-          find . -maxdepth 1 -type f -printf "%-10s %s\\n" | tail -20
 
-      - name: Create GitHub Release
+          ls -lh
+
+      - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: release-assets/**/*
+          files: release-assets/*
           body_path: release-assets/MANIFEST.md
           draft: false
           prerelease: false
           generate_release_notes: true
-
-      - name: Publish artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: release-${{ needs.detect.outputs.repo_version }}
-          path: release-assets/
-          retention-days: 90
-
-  summary:
-    name: Build summary
-    needs: [detect, build]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    if: always()
-
-    steps:
-      - name: Print summary
-        run: |
-          cat >> "$GITHUB_STEP_SUMMARY" << 'EOF'
-          # Build Summary
-          
-          - **Repo Version**: ${{ needs.detect.outputs.repo_version }}
-          - **Codex Version**: ${{ needs.detect.outputs.codex_version }}
-          - **Build Mode**: ${{ needs.detect.outputs.build_mode }}
-          - **Is Release**: ${{ needs.detect.outputs.is_release }}
-          
-          [View workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
-          EOF
