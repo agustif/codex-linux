@@ -26,9 +26,6 @@ env:
   DOCKER_BUILDKIT: 1
 
 jobs:
-  # ============================================================================
-  # DETECT: Get versions, decide build strategy
-  # ============================================================================
   detect:
     name: Detect versions & build matrix
     runs-on: ubuntu-latest
@@ -48,23 +45,18 @@ jobs:
       - name: Detect versions
         id: version
         run: |
-          # Repo version from git tag or fallback
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+          if [ "$GITHUB_REF" = refs/tags/* ]; then
             REPO_VERSION="${GITHUB_REF#refs/tags/v}"
           else
             REPO_VERSION=$(git describe --tags --always 2>/dev/null | sed 's/^v//' || echo "0.1.0-dev")
           fi
           echo "repo=$REPO_VERSION" >> $GITHUB_OUTPUT
-
-          # Codex version
           CODEX_VERSION="${{ github.event.inputs.codex_version }}"
           if [ "$CODEX_VERSION" = "latest" ] || [ -z "$CODEX_VERSION" ]; then
-            CODEX_VERSION=$(curl -s https://api.github.com/repos/openai/codex/releases/latest \
-              | jq -r '.tag_name' | sed 's/^v//' || echo "0.1.0")
+            CODEX_VERSION=$(curl -s https://api.github.com/repos/openai/codex/releases/latest | jq -r '.tag_name' | sed 's/^v//' || echo "0.1.0")
           fi
           echo "codex=$CODEX_VERSION" >> $GITHUB_OUTPUT
           echo "is_release=$([[ '$GITHUB_REF' == refs/tags/* ]] && echo true || echo false)" >> $GITHUB_OUTPUT
-
           echo "Repo: v$REPO_VERSION | Codex: v$CODEX_VERSION"
 
       - name: Determine build mode
@@ -83,17 +75,12 @@ jobs:
         id: matrix
         run: |
           if [ "${{ steps.mode.outputs.mode }}" = "quick" ]; then
-            # PR/dev builds: x86_64 + arm64, Ubuntu only
             MATRIX='{"include":[{"arch":"x86_64","docker_arch":"amd64","distro":"ubuntu-22.04","base":"ubuntu:22.04"},{"arch":"arm64","docker_arch":"arm64","distro":"ubuntu-22.04","base":"ubuntu:22.04"}]}'
           else
-            # Full release: all archs + distros
             MATRIX='{"include":[{"arch":"x86_64","docker_arch":"amd64","distro":"ubuntu-22.04","base":"ubuntu:22.04"},{"arch":"arm64","docker_arch":"arm64","distro":"ubuntu-22.04","base":"ubuntu:22.04"},{"arch":"armv7l","docker_arch":"arm/v7","distro":"ubuntu-22.04","base":"ubuntu:22.04"},{"arch":"x86_64","docker_arch":"amd64","distro":"debian-11","base":"debian:11-slim"},{"arch":"arm64","docker_arch":"arm64","distro":"debian-11","base":"debian:11-slim"},{"arch":"x86_64","docker_arch":"amd64","distro":"fedora-38","base":"fedora:38"},{"arch":"arm64","docker_arch":"arm64","distro":"fedora-38","base":"fedora:38"},{"arch":"x86_64","docker_arch":"amd64","distro":"alpine-latest","base":"alpine:latest"},{"arch":"arm64","docker_arch":"arm64","distro":"alpine-latest","base":"alpine:latest"}]}'
           fi
           echo "json=$MATRIX" >> $GITHUB_OUTPUT
 
-  # ============================================================================
-  # PREPARE: Download and extract Codex.app once, cache for builds
-  # ============================================================================
   prepare:
     name: Download & extract Codex.app
     needs: detect
@@ -109,14 +96,12 @@ jobs:
       - name: Download Codex.app
         run: |
           echo "Downloading Codex.app..."
-          
-          # Try official URL first
           if curl -L -f --progress-bar \
             "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg" \
             -o Codex.dmg 2>/dev/null; then
             echo "Downloaded from official source"
           else
-            echo "Official URL failed, skipping. Build will use local app/ if available."
+            echo "Official URL failed, skipping."
             touch Codex.dmg.skipped
           fi
 
@@ -128,34 +113,21 @@ jobs:
         run: |
           echo "Extracting Codex.app DMG..."
           mkdir -p extracted app
-          
-          # Extract DMG (7z will warn about symlinks but still extracts the HFS)
           7z x Codex.dmg -oextracted/ 2>&1 | tail -20 || true
-          
-          # Navigate to the extracted Resources directory
-          # DMG structure: Codex Installer/Codex.app/Contents/Resources/
           RESOURCES_PATH="extracted/Codex Installer/Codex.app/Contents/Resources"
-          
           if [ ! -d "$RESOURCES_PATH" ]; then
             echo "ERROR: Could not find Resources at expected path"
-            echo "Available directories:"
             find extracted -type d -maxdepth 3
             exit 1
           fi
-          
           echo "Copying Resources to app/..."
           cp -r "$RESOURCES_PATH"/* app/
-          
-          # Remove macOS extended attribute files that cause artifact upload issues
-          # These are created by 7z when extracting HFS and have colons in filenames
           echo "Cleaning up macOS extended attribute files..."
           find app -type f -print0 | while IFS= read -r -d '' file; do
-            if [[ "$file" == *":"* ]]; then
+            if echo "$file" | grep -q ":"; then
               rm "$file"
             fi
           done
-          echo "Extended attribute files removed"
-          
           echo "Extracting app.asar..."
           if [ -f "app/app.asar" ]; then
             mkdir -p app/webview
@@ -164,21 +136,6 @@ jobs:
             ls -lh app/webview/ | head -10
           else
             echo "WARNING: app.asar not found"
-          fi
-          
-          echo "Extraction complete. Files in app/:"
-          find app -maxdepth 1 -type f
-          echo "Total files: $(find app -type f | wc -l)"
-
-      - name: Verify extraction
-        run: |
-          echo "Files in app/:"
-          find app/ -maxdepth 2 -type f | head -20
-          WEBVIEW_SIZE=$(find app/webview -type f 2>/dev/null | wc -l)
-          echo "Webview files: $WEBVIEW_SIZE"
-          
-          if [ "$WEBVIEW_SIZE" -lt 5 ]; then
-            echo "WARNING: Very few webview files extracted"
           fi
 
       - name: Cache app assets
@@ -189,9 +146,6 @@ jobs:
           retention-days: 1
           if-no-files-found: ignore
 
-  # ============================================================================
-  # BUILD: Multi-arch, multi-distro builds
-  # ============================================================================
   build:
     name: Build ${{ matrix.distro }} / ${{ matrix.arch }}
     needs: [detect, prepare]
@@ -212,17 +166,17 @@ jobs:
           path: app/
         continue-on-error: true
 
-      - name: Sync extracted app to webview (if available)
+      - name: Sync extracted app to webview
         run: |
           if [ -d "app/webview" ]; then
             mkdir -p codex-linux-fork/webview
             rsync -av app/webview/ codex-linux-fork/webview/ 2>/dev/null || cp -r app/webview/* codex-linux-fork/webview/
-            echo "✓ Synced app/webview to codex-linux-fork/webview"
+            echo "Synced app/webview to codex-linux-fork/webview"
           else
-            echo "Note: app/webview not available (using local webview)"
+            echo "Note: app/webview not available"
           fi
 
-      - name: Checkout codex-oss (OSS backend)
+      - name: Checkout codex-oss
         run: |
           if [ ! -d codex-oss/.git ]; then
             git clone --depth 1 https://github.com/openai/codex.git codex-oss
@@ -232,24 +186,11 @@ jobs:
             cd -
           fi
 
-      - name: Set up QEMU for cross-architecture emulation
+      - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
-
-      - name: Verify workspace
-        run: |
-          echo "Current directory: $(pwd)"
-          echo ""
-          echo "Structure:"
-          ls -la | grep -E "^d|codex"
-          echo ""
-          echo "codex-linux-fork/:"
-          ls -la codex-linux-fork/ | head -10
-          echo ""
-          echo "Webview status:"
-          ls -lh codex-linux-fork/webview/ 2>/dev/null | head -5 || echo "webview missing"
 
       - name: Build for ${{ matrix.distro }} / ${{ matrix.arch }}
         run: |
@@ -260,9 +201,8 @@ jobs:
           
           echo "Building for $DISTRO/$ARCH..."
           
-          # Create comprehensive build script that runs inside container
           cat > /tmp/build.sh << 'SCRIPT_EOF'
-          #!/bin/bash
+          #!/bin/sh
           set -ex
           
           ARCH=$1
@@ -270,46 +210,55 @@ jobs:
           
           echo "===== BUILD: $DISTRO / $ARCH ====="
           echo "PWD: $(pwd)"
-          ls -la /build/ 2>/dev/null || echo "Note: /build may be mounted"
           
           # ===== DEPS: Install based on distro
           echo "[INSTALL] Dependencies for $DISTRO..."
           case "$DISTRO" in
             ubuntu-22.04|debian-11)
-              apt-get update -qq
+              apt-get update
               apt-get install -y \
                 build-essential curl wget git pkg-config \
                 libssl-dev libcap-dev ca-certificates libsecret-1-dev \
                 libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils \
                 libatspi2.0-0 libuuid1 libappindicator3-1 libasound2 libfuse2 \
-                file p7zip-full python3 2>&1 | tail -5
+                file p7zip-full python3
               ;;
             fedora-38)
               dnf install -y \
                 gcc g++ make curl wget git openssl-devel \
-                libsecret-devel gtk3 libnotify nss libxss libxtst xdg-utils \
-                at-spi2-core file p7zip python3 2>&1 | tail -5
+                libsecret-devel gtk3 libnotify nss libXss libXtst xdg-utils \
+                at-spi2-core file p7zip-plugins python3
               ;;
             alpine-latest)
               apk add --no-cache \
                 build-base curl wget git openssl-dev \
                 libsecret-dev gtk+3.0 libnotify nss xdg-utils file \
-                python3 bash 2>&1 | tail -5
+                python3 bash
               ;;
           esac
           
-          # ===== NODE: Install NodeJS
+          # Verify cc is available
+          which cc || (echo "ERROR: cc not found!" && exit 1)
+          cc --version | head -1
+          
+          # ===== NODE: Install NodeJS (handle armv7l specially)
           echo "[INSTALL] Node.js..."
           case "$DISTRO" in
             ubuntu-*|debian-*)
-              curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-              apt-get install -y nodejs 2>&1 | grep -E "^\d+|Processing"
+              if [ "$ARCH" = "armv7l" ]; then
+                # NodeSource doesn't support armhf, use prebuilt binaries
+                NODE_VER="20.11.0"
+                curl -sL "https://unofficial-builds.nodejs.org/download/release/v${NODE_VER}/node-v${NODE_VER}-linux-armv7l.tar.gz" | tar xz -C /usr/local --strip-components=1
+              else
+                curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+                apt-get install -y nodejs
+              fi
               ;;
             fedora-*)
-              dnf install -y nodejs 2>&1 | tail -3
+              dnf install -y nodejs
               ;;
             alpine-*)
-              apk add --no-cache nodejs npm 2>&1 | tail -3
+              apk add --no-cache nodejs npm
               ;;
           esac
           node --version
@@ -333,7 +282,7 @@ jobs:
           fi
           
           cd codex-oss/codex-rs
-          cargo build --release -p codex-app-server 2>&1 | tail -10
+          cargo build --release -p codex-app-server
           cd -
           
           mkdir -p codex-linux-fork/bin
@@ -345,7 +294,7 @@ jobs:
           
           cp codex-oss/codex-rs/target/release/codex-app-server codex-linux-fork/bin/codex
           chmod +x codex-linux-fork/bin/codex
-          echo "✓ Binary: $(du -h codex-linux-fork/bin/codex | cut -f1)"
+          echo "Binary: $(du -h codex-linux-fork/bin/codex | cut -f1)"
           
           # ===== [2/5] DOWNLOAD RIPGREP
           echo "[2/5] Downloading ripgrep ($ARCH)..."
@@ -358,31 +307,31 @@ jobs:
           mkdir -p codex-linux-fork/resources
           if curl -sL --fail "$RG_URL" | tar xz -C codex-linux-fork/resources --strip-components=1 2>/dev/null; then
             chmod +x codex-linux-fork/resources/rg
-            echo "✓ ripgrep ready"
+            echo "ripgrep ready"
           else
-            echo "⚠ ripgrep download failed (non-fatal)"
+            echo "WARNING: ripgrep download failed (non-fatal)"
           fi
           
           # ===== [3/5] INSTALL NODE DEPENDENCIES
           echo "[3/5] Installing Node dependencies..."
           cd codex-linux-fork
-          npm install --production 2>&1 | tail -5
-          echo "✓ Dependencies installed"
+          npm install --production
+          echo "Dependencies installed"
           
           # ===== [4/5] BUILD PACKAGES
           echo "[4/5] Building packages..."
-          npm run build:linux 2>&1 | tail -10
-          echo "✓ Packages built"
+          npm run build:linux
+          echo "Packages built"
           
           # ===== [5/5] CREATE CHECKSUMS
           echo "[5/5] Creating checksums..."
           if [ -d dist ]; then
             cd dist
             sha256sum * > SHA256SUMS
-            echo "✓ Checksums:"
+            echo "Checksums:"
             head -3 SHA256SUMS
           else
-            echo "⚠ dist/ not found"
+            echo "WARNING: dist/ not found"
           fi
           
           echo ""
@@ -391,7 +340,12 @@ jobs:
           
           chmod +x /tmp/build.sh
           
-          # Run Docker build with proper mounts
+          # Use sh for Alpine (bash installed by script), bash for others
+          RUNNER="sh"
+          if echo "$DISTRO" | grep -qv alpine; then
+            RUNNER="bash"
+          fi
+          
           docker run --rm \
             --platform "linux/$DOCKER_ARCH" \
             --volume "$(pwd):/build:rw" \
@@ -400,7 +354,7 @@ jobs:
             -e "CARGO_TERM_COLOR=always" \
             --workdir /build \
             "$BASE_IMAGE" \
-            bash /build.sh "$ARCH" "$DISTRO"
+            $RUNNER /build.sh "$ARCH" "$DISTRO"
 
       - name: Collect artifacts
         if: always()
@@ -409,17 +363,14 @@ jobs:
           DISTRO="${{ matrix.distro }}"
           mkdir -p "artifacts-${DISTRO}-${ARCH}"
           
-          # Copy packages
           if [ -d codex-linux-fork/dist ]; then
             cp codex-linux-fork/dist/* "artifacts-${DISTRO}-${ARCH}/" 2>/dev/null || true
           fi
           
-          # Copy binary
           if [ -f codex-linux-fork/bin/codex ]; then
             cp codex-linux-fork/bin/codex "artifacts-${DISTRO}-${ARCH}/codex-${ARCH}"
           fi
           
-          # Metadata
           cat > "artifacts-${DISTRO}-${ARCH}/BUILD_INFO.txt" << EOF
           Distribution: $DISTRO
           Architecture: $ARCH
@@ -438,9 +389,6 @@ jobs:
           path: artifacts-${{ matrix.distro }}-${{ matrix.arch }}/
           retention-days: 30
 
-  # ============================================================================
-  # RELEASE: Organize artifacts and create GitHub release
-  # ============================================================================
   release:
     name: Organize & release
     needs: [detect, build]
@@ -460,18 +408,12 @@ jobs:
       - name: Organize release assets
         run: |
           mkdir -p release-assets
-          
-          # Flatten artifact structure
           find all-artifacts -type f ! -name ".gitkeep" ! -path "*/codex-app-cache/*" | while read -r f; do
             filename=$(basename "$f")
             cp "$f" "release-assets/$filename" 2>/dev/null || true
           done
-          
-          # Create comprehensive checksums
           cd release-assets
           find . -type f ! -name "SHA256SUMS*" -exec sha256sum {} \; | sort > SHA256SUMS
-          
-          # Create manifest
           cat > MANIFEST.md << 'MANIFEST_EOF'
           # Codex Linux Release
           
@@ -480,12 +422,8 @@ jobs:
           **Build Date**: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
           
           ## Available Packages
-          
           MANIFEST_EOF
-          
-          ls -lh | grep -E "\.deb|\.rpm|AppImage|\.tar\.gz|codex-" | \
-            awk '{print "- " $9 " (" $5 ")"}' >> MANIFEST.md
-          
+          ls -lh | grep -E "\.deb|\.rpm|AppImage|\.tar\.gz|codex-" | awk '{print "- " $9 " (" $5 ")"}' >> MANIFEST.md
           echo "Release assets organized:"
           ls -lh | tail -20
 
@@ -505,9 +443,6 @@ jobs:
           path: release-assets/
           retention-days: 90
 
-  # ============================================================================
-  # SUMMARY: Print build summary
-  # ============================================================================
   summary:
     name: Build summary
     needs: [detect, build]
