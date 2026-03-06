@@ -29,6 +29,9 @@ jobs:
   detect:
     name: Detect versions & build matrix
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     outputs:
       repo_version: ${{ steps.version.outputs.repo }}
       codex_version: ${{ steps.version.outputs.codex }}
@@ -38,56 +41,70 @@ jobs:
       matrix_json: ${{ steps.matrix.outputs.json }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           submodules: recursive
 
       - name: Detect versions
         id: version
+        env:
+          INPUT_CODEX_VERSION: ${{ github.event.inputs.codex_version }}
         run: |
-          if [ "$GITHUB_REF" = refs/tags/* ]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             REPO_VERSION="${GITHUB_REF#refs/tags/v}"
           else
             REPO_VERSION=$(git describe --tags --always 2>/dev/null | sed 's/^v//' || echo "0.1.0-dev")
           fi
-          echo "repo=$REPO_VERSION" >> $GITHUB_OUTPUT
-          CODEX_VERSION="${{ github.event.inputs.codex_version }}"
+          echo "repo=$REPO_VERSION" >> "$GITHUB_OUTPUT"
+          CODEX_VERSION="$INPUT_CODEX_VERSION"
           if [ "$CODEX_VERSION" = "latest" ] || [ -z "$CODEX_VERSION" ]; then
-            CODEX_VERSION=$(curl -s https://api.github.com/repos/openai/codex/releases/latest | jq -r '.tag_name' | sed 's/^v//' || echo "0.1.0")
+            CODEX_VERSION=$(curl --retry 3 --retry-delay 2 -fsSL https://api.github.com/repos/openai/codex/releases/latest | jq -r '.tag_name' | sed 's/^v//' || echo "0.1.0")
           fi
-          echo "codex=$CODEX_VERSION" >> $GITHUB_OUTPUT
-          echo "is_release=$([[ '$GITHUB_REF' == refs/tags/* ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+          echo "codex=$CODEX_VERSION" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+          fi
           echo "Repo: v$REPO_VERSION | Codex: v$CODEX_VERSION"
 
       - name: Determine build mode
         id: mode
+        env:
+          INPUT_BUILD_MODE: ${{ github.event.inputs.build_mode }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          MODE="${{ github.event.inputs.build_mode }}"
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
+          MODE="$INPUT_BUILD_MODE"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
             MODE="quick"
           elif [ -z "$MODE" ]; then
             MODE="full"
           fi
-          echo "mode=$MODE" >> $GITHUB_OUTPUT
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "Build mode: $MODE"
 
       - name: Generate build matrix
         id: matrix
+        env:
+          BUILD_MODE: ${{ steps.mode.outputs.mode }}
         run: |
-          if [ "${{ steps.mode.outputs.mode }}" = "quick" ]; then
+          if [ "$BUILD_MODE" = "quick" ]; then
             MATRIX='{"include":[{"arch":"x86_64","docker_arch":"amd64","distro":"ubuntu-22.04","base":"ubuntu:22.04"},{"arch":"arm64","docker_arch":"arm64","distro":"ubuntu-22.04","base":"ubuntu:22.04"}]}'
           else
             MATRIX='{"include":[{"arch":"x86_64","docker_arch":"amd64","distro":"ubuntu-22.04","base":"ubuntu:22.04"},{"arch":"arm64","docker_arch":"arm64","distro":"ubuntu-22.04","base":"ubuntu:22.04"},{"arch":"armv7l","docker_arch":"arm/v7","distro":"ubuntu-22.04","base":"ubuntu:22.04"},{"arch":"x86_64","docker_arch":"amd64","distro":"debian-11","base":"debian:11-slim"},{"arch":"arm64","docker_arch":"arm64","distro":"debian-11","base":"debian:11-slim"},{"arch":"x86_64","docker_arch":"amd64","distro":"fedora-38","base":"fedora:38"},{"arch":"arm64","docker_arch":"arm64","distro":"fedora-38","base":"fedora:38"},{"arch":"x86_64","docker_arch":"amd64","distro":"alpine-latest","base":"alpine:latest"},{"arch":"arm64","docker_arch":"arm64","distro":"alpine-latest","base":"alpine:latest"}]}'
           fi
-          echo "json=$MATRIX" >> $GITHUB_OUTPUT
+          echo "json=$MATRIX" >> "$GITHUB_OUTPUT"
 
   prepare:
     name: Download & extract Codex.app
     needs: detect
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
@@ -136,13 +153,13 @@ jobs:
             mkdir -p app/webview
             asar extract app/app.asar app/webview/
             echo "app.asar extracted successfully"
-            ls -lh app/webview/ | head -10
+            find app/webview -maxdepth 1 -type f -printf "%p\\n" | head -10
           else
             echo "WARNING: app.asar not found"
           fi
 
       - name: Cache app assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: codex-app-cache
           path: app/
@@ -153,6 +170,9 @@ jobs:
     name: Build ${{ matrix.distro }} / ${{ matrix.arch }}
     needs: [detect, prepare]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
     
     strategy:
       fail-fast: false
@@ -160,12 +180,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
       - name: Download cached app
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: codex-app-cache
           path: app/
@@ -182,10 +202,10 @@ jobs:
           fi
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v4
 
       - name: Build for ${{ matrix.distro }} / ${{ matrix.arch }}
         run: |
@@ -221,14 +241,14 @@ jobs:
             fedora-38)
               dnf install -y \
                 gcc g++ make curl wget git openssl-devel \
-                libsecret-devel gtk3 libnotify nss libXScrnSaver libXtst xdg-utils \
-                at-spi2-core file p7zip-plugins python3
+                libcap-devel libsecret-devel gtk3 libnotify nss libXScrnSaver libXtst xdg-utils \
+                at-spi2-core file p7zip-plugins python3 pkgconf
               ;;
             alpine-latest)
               apk add --no-cache \
                 build-base curl wget git openssl-dev perl \
-                libsecret-dev gtk+3.0 libnotify nss xdg-utils file \
-                python3 bash
+                libcap-dev libsecret-dev gtk+3.0 libnotify nss xdg-utils file \
+                python3 bash pkgconf
               ;;
           esac
           
@@ -265,7 +285,44 @@ jobs:
           # Use system git on 32-bit to avoid EOVERFLOW in libgit2
           if [ "$ARCH" = "armv7l" ]; then
             export CARGO_NET_GIT_FETCH_WITH_CLI=true
+            # Clear any existing cargo cache to avoid EOVERFLOW issues
+            rm -rf "$HOME/.cargo/git/db" "$HOME/.cargo/registry/cache"
+            # Force install latest git for armv7l from git-core PPA
+            echo "Installing latest git for armv7l..."
+            apt-get update
+            apt-get install -y software-properties-common
+            add-apt-repository -y ppa:git-core/ppa
+            apt-get update
+            apt-get install -y git
+            git --version
           fi
+          # Configure pkg-config for libcap
+          export PKG_CONFIG_ALLOW_SYSTEM_LIBS=1
+          export PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1
+          case "$DISTRO" in
+            ubuntu-*|debian-*)
+              export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/lib/pkgconfig:$PKG_CONFIG_PATH
+              ;;
+            fedora-*)
+              # Try multiple possible locations for libcap.pc
+              for path in /usr/lib64/pkgconfig /usr/lib/pkgconfig /usr/share/pkgconfig; do
+                if [ -f "$path/libcap.pc" ]; then
+                  export PKG_CONFIG_PATH="$path:$PKG_CONFIG_PATH"
+                  echo "Found libcap.pc at $path"
+                  break
+                fi
+              done
+              # Also install libcap-static if available
+              dnf install -y libcap-static 2>/dev/null || echo "libcap-static not available, using shared"
+              ;;
+            alpine-*)
+              export PKG_CONFIG_PATH=/usr/lib/pkgconfig:$PKG_CONFIG_PATH
+              ;;
+          esac
+          echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
+          echo "Searching for libcap.pc:"
+          find /usr -name "libcap.pc" 2>/dev/null | head -5
+          pkg-config --exists libcap && echo "libcap found via pkg-config" || echo "WARNING: libcap not found via pkg-config"
           rustc --version
           cargo --version
           
@@ -280,7 +337,12 @@ jobs:
           fi
           
           cd codex-oss/codex-rs
-          cargo build --release -p codex-app-server
+          echo "Building with CARGO_TARGET_DIR=$CARGO_TARGET_DIR"
+          cargo build --release -p codex-app-server 2>&1 | tee /tmp/build.log || {
+            echo "ERROR: Cargo build failed!"
+            tail -50 /tmp/build.log
+            exit 1
+          }
           cd -
           
           mkdir -p codex-linux-fork/bin
@@ -291,9 +353,13 @@ jobs:
             BINARY_PATH="codex-oss/codex-rs/target/release/codex-app-server"
           fi
           
+          echo "Looking for binary at: $BINARY_PATH"
           if [ ! -f "$BINARY_PATH" ]; then
             echo "ERROR: Binary not built at $BINARY_PATH!"
-            ls -la "$CARGO_TARGET_DIR/release/" 2>/dev/null || ls -la codex-oss/codex-rs/target/release/ 2>/dev/null || echo "target dir missing"
+            echo "Searching for codex-app-server in target directories:"
+            find /build -name "codex-app-server" -type f 2>/dev/null | head -10
+            echo "CARGO_TARGET_DIR contents:"
+            ls -la "$CARGO_TARGET_DIR" 2>/dev/null || echo "CARGO_TARGET_DIR not accessible"
             exit 1
           fi
           
@@ -332,7 +398,8 @@ jobs:
           echo "[5/5] Creating checksums..."
           if [ -d dist ]; then
             cd dist
-            sha256sum * > SHA256SUMS
+            # Only checksum files, not directories
+            find . -maxdepth 1 -type f -exec sha256sum {} \; > SHA256SUMS
             echo "Checksums:"
             head -3 SHA256SUMS
           else
@@ -387,7 +454,7 @@ jobs:
           ls -lh "artifacts-${DISTRO}-${ARCH}/" || echo "No artifacts"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: artifacts-${{ matrix.distro }}-${{ matrix.arch }}
@@ -398,15 +465,16 @@ jobs:
     name: Organize & release
     needs: [detect, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: always() && needs.detect.outputs.is_release == 'true'
     permissions:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: all-artifacts/
 
@@ -428,12 +496,21 @@ jobs:
           
           ## Available Packages
           MANIFEST_EOF
-          ls -lh | grep -E "\.deb|\.rpm|AppImage|\.tar\.gz|codex-" | awk '{print "- " $9 " (" $5 ")"}' >> MANIFEST.md
+          for f in ./*; do
+            if [ -f "$f" ]; then
+              case "$f" in
+                *.deb|*.rpm|*AppImage*|*.tar.gz|*codex-*)
+                  size=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null || echo "0")
+                  echo "- $(basename "$f") ($size bytes)" >> MANIFEST.md
+                  ;;
+              esac
+            fi
+          done
           echo "Release assets organized:"
-          ls -lh | tail -20
+          find . -maxdepth 1 -type f -printf "%-10s %s\\n" | tail -20
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: release-assets/**/*
           body_path: release-assets/MANIFEST.md
@@ -442,7 +519,7 @@ jobs:
           generate_release_notes: true
 
       - name: Publish artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ needs.detect.outputs.repo_version }}
           path: release-assets/
@@ -452,12 +529,15 @@ jobs:
     name: Build summary
     needs: [detect, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
     if: always()
 
     steps:
       - name: Print summary
         run: |
-          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          cat >> "$GITHUB_STEP_SUMMARY" << 'EOF'
           # Build Summary
           
           - **Repo Version**: ${{ needs.detect.outputs.repo_version }}

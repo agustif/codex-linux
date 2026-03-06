@@ -123,7 +123,15 @@ RELEASE_DIR="$REPO_ROOT/release"
 if [ -d "$RELEASE_DIR" ] && [ "$(find "$RELEASE_DIR" -maxdepth 1 -type f | wc -l)" -gt 0 ]; then
   echo ""
   echo "Artifacts:"
-  ls -lh "$RELEASE_DIR"/ | grep -E "AppImage|deb|tar.gz|arm64"
+  for f in "$RELEASE_DIR"/*; do
+    if [ -f "$f" ]; then
+      case "$(basename "$f")" in
+        *AppImage*|*.deb|*.tar.gz|*arm64*)
+          ls -lh "$f"
+          ;;
+      esac
+    fi
+  done
   
   # Cleanup DMG
   rm -f "$CODEX_DMG"
