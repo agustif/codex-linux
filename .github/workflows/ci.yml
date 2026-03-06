@@ -92,69 +92,28 @@ jobs:
           echo "json=$MATRIX" >> $GITHUB_OUTPUT
 
   # ============================================================================
-  # PREPARE: Download and extract Codex.app once, cache for builds
+  # PREPARE: Cache extracted app from repository (already extracted)
   # ============================================================================
   prepare:
-    name: Download & extract Codex.app
+    name: Cache webview assets
     needs: detect
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install extraction tools
+      - name: Verify app directory exists
         run: |
-          sudo apt-get update
-          sudo apt-get install -y p7zip-full
-          7z --version
-
-      - name: Download Codex.app
-        run: |
-          DMG_FILE="Codex.dmg"
-          
-          echo "Downloading Codex.app for extraction..."
-          
-          # Official Codex.app download source
-          for URL in \
-            "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg" \
-            "https://storage.googleapis.com/codex-releases/Codex.dmg"; do
-            if curl -L -f --progress-bar "$URL" -o "${DMG_FILE}" 2>/dev/null; then
-              echo "Downloaded: $(du -h ${DMG_FILE} | cut -f1)"
-              ls -lh "${DMG_FILE}"
-              break
-            fi
-          done
-          
-          if [ ! -f "${DMG_FILE}" ]; then
-            echo "ERROR: Codex.app download failed from all sources"
-            echo "Available sources were:"
-            echo "  - https://persistent.oaistatic.com/codex-app-prod/Codex.dmg"
-            echo "  - https://storage.googleapis.com/codex-releases/Codex.dmg"
+          if [ ! -d app ]; then
+            echo "ERROR: app/ directory not found in repository"
+            echo "This should contain extracted Codex.app webview and assets"
             exit 1
           fi
-
-      - name: Extract Codex.app
-        run: |
-          mkdir -p extracted app
           
-          echo "Extracting DMG..."
-          7z x Codex.dmg -oextracted/
-          
-          echo "Searching for assets in extracted DMG..."
-          find extracted -type f \( -name "*.asar" -o -name "*.png" -o -name "*.svg" -o -name "*.node" \) | head -20
-          
-          echo "Copying assets to app/ directory..."
-          find extracted -type f \( -name "*.asar" -o -name "*.png" -o -name "*.svg" -o -name "*.node" \) \
-            | while read -r f; do
-              dir=$(dirname "$f" | sed "s|extracted|app|")
-              mkdir -p "$dir"
-              cp "$f" "$dir/"
-            done
-          
-          echo "Extraction complete"
+          echo "App directory found:"
           ls -lh app/
-          find app -type f | wc -l
+          find app -type f | head -20
 
-      - name: Cache extracted app
+      - name: Cache app assets
         uses: actions/upload-artifact@v4
         with:
           name: codex-app-cache
