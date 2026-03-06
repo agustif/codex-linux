@@ -126,21 +126,26 @@ jobs:
           echo "Extracting Codex.app DMG..."
           mkdir -p extracted app
           
-          7z x Codex.dmg -oextracted/ || {
-            echo "7z extraction failed, trying alternate approach"
+          # Extract DMG (7z will warn about symlinks but still extracts the HFS)
+          7z x Codex.dmg -oextracted/ 2>&1 | tail -20 || true
+          
+          # Navigate to the extracted Resources directory
+          # DMG structure: Codex Installer/Codex.app/Contents/Resources/
+          RESOURCES_PATH="extracted/Codex Installer/Codex.app/Contents/Resources"
+          
+          if [ ! -d "$RESOURCES_PATH" ]; then
+            echo "ERROR: Could not find Resources at expected path"
+            echo "Available directories:"
+            find extracted -type d -maxdepth 3
             exit 1
-          }
+          fi
           
-          echo "Copying webview assets..."
-          find extracted -type f \( -name "*.asar" -o -name "*.png" -o -name "*.svg" -o -name "*.node" \) \
-            | while read -r f; do
-              dir=$(dirname "$f" | sed "s|extracted|app|")
-              mkdir -p "$dir"
-              cp "$f" "$dir/"
-            done
+          echo "Found Resources directory, copying all files..."
+          cp -r "$RESOURCES_PATH"/* app/
           
-          echo "Assets copied:"
-          find app -type f | head -20
+          echo "Extraction complete. Files in app/:"
+          ls -lh app/ | head -20
+          echo "Total files: $(find app -type f | wc -l)"
 
       - name: Cache app assets
         uses: actions/upload-artifact@v4
