@@ -221,7 +221,7 @@ jobs:
             fedora-38)
               dnf install -y \
                 gcc g++ make curl wget git openssl-devel \
-                libsecret-devel gtk3 libnotify nss libXss libXtst xdg-utils \
+                libsecret-devel gtk3 libnotify nss libXScrnSaver libXtst xdg-utils \
                 at-spi2-core file p7zip-plugins python3
               ;;
             alpine-latest)
@@ -241,8 +241,8 @@ jobs:
           case "$DISTRO" in
             ubuntu-*|debian-*)
               if [ "$ARCH" = "armv7l" ]; then
-                NODE_VER="20.11.0"
-                curl -sL "https://unofficial-builds.nodejs.org/download/release/v${NODE_VER}/node-v${NODE_VER}-linux-armv7l.tar.gz" | tar xz -C /usr/local --strip-components=1
+                # NodeSource doesn't support armhf, use distro package
+                apt-get install -y nodejs npm
               else
                 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
                 apt-get install -y nodejs
