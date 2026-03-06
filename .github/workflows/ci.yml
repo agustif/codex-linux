@@ -262,6 +262,10 @@ jobs:
           echo "[INSTALL] Rust..."
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y -q
           export PATH="$HOME/.cargo/bin:$PATH"
+          # Use system git on 32-bit to avoid EOVERFLOW in libgit2
+          if [ "$ARCH" = "armv7l" ]; then
+            export CARGO_NET_GIT_FETCH_WITH_CLI=true
+          fi
           rustc --version
           cargo --version
           
@@ -280,13 +284,20 @@ jobs:
           cd -
           
           mkdir -p codex-linux-fork/bin
-          if [ ! -f codex-oss/codex-rs/target/release/codex-app-server ]; then
-            echo "ERROR: Binary not built!"
-            ls -la codex-oss/codex-rs/target/release/ 2>/dev/null || echo "target dir missing"
+          # Handle CARGO_TARGET_DIR override
+          if [ -n "$CARGO_TARGET_DIR" ]; then
+            BINARY_PATH="$CARGO_TARGET_DIR/release/codex-app-server"
+          else
+            BINARY_PATH="codex-oss/codex-rs/target/release/codex-app-server"
+          fi
+          
+          if [ ! -f "$BINARY_PATH" ]; then
+            echo "ERROR: Binary not built at $BINARY_PATH!"
+            ls -la "$CARGO_TARGET_DIR/release/" 2>/dev/null || ls -la codex-oss/codex-rs/target/release/ 2>/dev/null || echo "target dir missing"
             exit 1
           fi
           
-          cp codex-oss/codex-rs/target/release/codex-app-server codex-linux-fork/bin/codex
+          cp "$BINARY_PATH" codex-linux-fork/bin/codex
           chmod +x codex-linux-fork/bin/codex
           echo "Binary: $(du -h codex-linux-fork/bin/codex | cut -f1)"
           
