@@ -101,6 +101,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install extraction tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+          7z --version
+
       - name: Download Codex.app
         run: |
           DMG_FILE="Codex.dmg"
@@ -113,37 +119,40 @@ jobs:
             "https://storage.googleapis.com/codex-releases/Codex.dmg"; do
             if curl -L -f --progress-bar "$URL" -o "${DMG_FILE}" 2>/dev/null; then
               echo "Downloaded: $(du -h ${DMG_FILE} | cut -f1)"
+              ls -lh "${DMG_FILE}"
               break
             fi
           done
           
           if [ ! -f "${DMG_FILE}" ]; then
-            echo "Warning: Codex.app download failed, will use existing app/ directory"
+            echo "ERROR: Codex.app download failed from all sources"
+            echo "Available sources were:"
+            echo "  - https://persistent.oaistatic.com/codex-app-prod/Codex.dmg"
+            echo "  - https://storage.googleapis.com/codex-releases/Codex.dmg"
+            exit 1
           fi
 
       - name: Extract Codex.app
-        if: hashFiles('Codex.dmg') != ''
         run: |
-          sudo apt-get update && sudo apt-get install -y p7zip-full 2>/dev/null || echo "Using existing app/"
           mkdir -p extracted app
           
-          # Try extraction with 7z
-          if 7z x Codex.dmg -oextracted/ > /dev/null 2>&1; then
-            echo "DMG extracted successfully"
-            
-            # Copy extracted content to app/
-            find extracted -type f \( -name "*.asar" -o -name "*.png" -o -name "*.svg" -o -name "*.node" \) \
-              | while read -r f; do
-                dir=$(dirname "$f" | sed "s|extracted|app|")
-                mkdir -p "$dir"
-                cp "$f" "$dir/" 2>/dev/null || true
-              done
-            
-            echo "Extraction complete"
-            ls -lh app/
-          else
-            echo "DMG extraction failed, will use existing app/ directory"
-          fi
+          echo "Extracting DMG..."
+          7z x Codex.dmg -oextracted/
+          
+          echo "Searching for assets in extracted DMG..."
+          find extracted -type f \( -name "*.asar" -o -name "*.png" -o -name "*.svg" -o -name "*.node" \) | head -20
+          
+          echo "Copying assets to app/ directory..."
+          find extracted -type f \( -name "*.asar" -o -name "*.png" -o -name "*.svg" -o -name "*.node" \) \
+            | while read -r f; do
+              dir=$(dirname "$f" | sed "s|extracted|app|")
+              mkdir -p "$dir"
+              cp "$f" "$dir/"
+            done
+          
+          echo "Extraction complete"
+          ls -lh app/
+          find app -type f | wc -l
 
       - name: Cache extracted app
         uses: actions/upload-artifact@v4
